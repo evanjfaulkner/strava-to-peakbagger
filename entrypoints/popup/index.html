@@ -10,7 +10,13 @@
     <main>
       <header>
         <h1>Strava → Peakbagger</h1>
-        <button id="refresh-btn" type="button">Refresh</button>
+        <div class="header-actions">
+          <label class="show-hidden-toggle">
+            <input id="show-hidden" type="checkbox" />
+            Show hidden
+          </label>
+          <button id="refresh-btn" type="button">Refresh</button>
+        </div>
       </header>
 
       <p id="cid-warning" class="warning" role="status" hidden>

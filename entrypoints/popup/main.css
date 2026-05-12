@@ -27,6 +27,27 @@ header {
   position: sticky;
   top: 0;
   z-index: 1;
+  gap: 8px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.show-hidden-toggle {
+  font-size: 11px;
+  color: #6b7280;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.show-hidden-toggle input {
+  margin: 0;
+  cursor: pointer;
 }
 
 h1 {
@@ -128,9 +149,43 @@ button:disabled {
   gap: 2px;
 }
 
-.open-btn {
+.open-btn,
+.hide-btn,
+.unhide-btn {
   font-size: 11px;
   padding: 3px 8px;
+}
+
+.hide-btn,
+.unhide-btn {
+  background: white;
+  color: #2563eb;
+  border-color: #d1d5db;
+}
+
+.hide-btn:hover,
+.unhide-btn:hover {
+  background: #f3f4f6;
+  color: #2563eb;
+}
+
+.match-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #fef3c7;
+  color: #92400e;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.activity.done {
+  opacity: 0.55;
+}
+
+.activity.done:hover {
+  background: inherit;
 }
 
 .row-status {

@@ -14,7 +14,13 @@ import { installFakeChromeStorage } from "./fakeChromeStorage";
 const PAGE_HTML = `
   <header>
     <h1>Strava → Peakbagger</h1>
-    <button id="refresh-btn" type="button">Refresh</button>
+    <div class="header-actions">
+      <label class="show-hidden-toggle">
+        <input id="show-hidden" type="checkbox" />
+        Show hidden
+      </label>
+      <button id="refresh-btn" type="button">Refresh</button>
+    </div>
   </header>
   <p id="cid-warning" class="warning" role="status" hidden>warning</p>
   <p id="status" role="status"></p>
@@ -27,7 +33,16 @@ function makeActivity(
   start: string,
   sportType: string,
   name: string,
-): ActivitySummary {
+  extras: {
+    state?: "unmatched" | "pending" | "done";
+    matchedPeakIds?: number[];
+    processedPeakIds?: number[];
+  } = {},
+): ActivitySummary & {
+  state?: string;
+  matchedPeakIds?: number[];
+  processedPeakIds?: number[];
+} {
   return {
     id,
     start,
@@ -37,6 +52,7 @@ function makeActivity(
     sportType,
     distanceM: 1000,
     elevGainM: 100,
+    ...extras,
   };
 }
 
@@ -230,5 +246,181 @@ describe("popup — Open button", () => {
 
     // Re-enabled after the response resolves.
     expect(btn.disabled).toBe(false);
+  });
+});
+
+describe("popup — idempotency UI", () => {
+  it("renders a (M/N) badge on pending rows", async () => {
+    sendMessage.mockResolvedValue({
+      ok: true,
+      activities: [
+        makeActivity(101, "2026-05-08T17:00:00Z", "Hike", "Traverse", {
+          state: "pending",
+          matchedPeakIds: [1, 2, 3],
+          processedPeakIds: [1],
+        }),
+      ],
+    });
+
+    await init();
+
+    const badge = document.querySelector(".match-badge");
+    expect(badge?.textContent ?? "").toMatch(/1\s*\/\s*3/);
+  });
+
+  it('done rows render an "Unhide" button instead of "Open"', async () => {
+    sendMessage.mockResolvedValue({
+      ok: true,
+      activities: [
+        makeActivity(101, "2026-05-08T17:00:00Z", "Hike", "Done one", {
+          state: "done",
+          matchedPeakIds: [1],
+          processedPeakIds: [1],
+        }),
+      ],
+    });
+
+    await init();
+
+    expect(document.querySelector(".activity.done")).not.toBeNull();
+    expect(document.querySelector(".unhide-btn")).not.toBeNull();
+    expect(document.querySelector(".open-btn")).toBeNull();
+  });
+
+  it("unmatched and pending rows have a Hide button", async () => {
+    sendMessage.mockResolvedValue({
+      ok: true,
+      activities: [
+        makeActivity(1, "2026-05-08T17:00:00Z", "Hike", "U", {
+          state: "unmatched",
+        }),
+        makeActivity(2, "2026-05-07T17:00:00Z", "Run", "P", {
+          state: "pending",
+          matchedPeakIds: [10],
+          processedPeakIds: [],
+        }),
+      ],
+    });
+
+    await init();
+
+    expect(document.querySelectorAll(".hide-btn")).toHaveLength(2);
+    expect(document.querySelectorAll(".unhide-btn")).toHaveLength(0);
+  });
+
+  it("toggling Show hidden sends getActivities with showHidden=true", async () => {
+    // First call: init renders with showHidden=false
+    sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
+    await init();
+
+    expect(sendMessage.mock.calls[0]![0]).toEqual({
+      type: "getActivities",
+      showHidden: false,
+    });
+
+    // Toggle: second getActivities should go with showHidden=true
+    sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
+    const toggle = document.getElementById("show-hidden") as HTMLInputElement;
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushAsync();
+    await flushAsync();
+
+    expect(sendMessage.mock.calls[1]![0]).toEqual({
+      type: "getActivities",
+      showHidden: true,
+    });
+  });
+
+  it("clicking Hide sends markActivityHidden and re-fetches the list", async () => {
+    sendMessage.mockResolvedValueOnce({
+      ok: true,
+      activities: [
+        makeActivity(101, "2026-05-08T17:00:00Z", "Hike", "T", {
+          state: "pending",
+          matchedPeakIds: [1, 2],
+          processedPeakIds: [],
+        }),
+      ],
+    });
+    await init();
+    sendMessage.mockReset();
+
+    sendMessage
+      .mockResolvedValueOnce({ ok: true, hiddenCount: 2 })
+      .mockResolvedValueOnce({ ok: true, activities: [] });
+
+    const hideBtn = document.querySelector<HTMLButtonElement>(".hide-btn")!;
+    hideBtn.click();
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(sendMessage.mock.calls[0]![0]).toEqual({
+      type: "markActivityHidden",
+      stravaId: 101,
+    });
+    // Second call: getActivities re-fetch after the Hide succeeds.
+    expect(sendMessage.mock.calls[1]![0]).toMatchObject({
+      type: "getActivities",
+    });
+  });
+
+  it("clicking Unhide sends markActivityUnhidden", async () => {
+    sendMessage.mockResolvedValueOnce({
+      ok: true,
+      activities: [
+        makeActivity(101, "2026-05-08T17:00:00Z", "Hike", "D", {
+          state: "done",
+          matchedPeakIds: [1],
+          processedPeakIds: [1],
+        }),
+      ],
+    });
+    await init();
+    sendMessage.mockReset();
+
+    sendMessage
+      .mockResolvedValueOnce({ ok: true, unhiddenCount: 1 })
+      .mockResolvedValueOnce({ ok: true, activities: [] });
+
+    const unhideBtn = document.querySelector<HTMLButtonElement>(".unhide-btn")!;
+    unhideBtn.click();
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(sendMessage.mock.calls[0]![0]).toEqual({
+      type: "markActivityUnhidden",
+      stravaId: 101,
+    });
+  });
+
+  it('shows "All matches already saved" when totalMatches > 0 but openedCount = 0', async () => {
+    sendMessage.mockResolvedValueOnce({
+      ok: true,
+      activities: [
+        makeActivity(101, "2026-05-08T17:00:00Z", "Hike", "T", {
+          state: "pending",
+          matchedPeakIds: [1, 2],
+          processedPeakIds: [1, 2],
+        }),
+      ],
+    });
+    await init();
+
+    sendMessage.mockResolvedValueOnce({
+      ok: true,
+      openedCount: 0,
+      totalMatches: 2,
+    });
+
+    const openBtn = document.querySelector<HTMLButtonElement>(".open-btn")!;
+    openBtn.click();
+    await flushAsync();
+    await flushAsync();
+
+    const status = document.querySelector(".row-status")?.textContent ?? "";
+    expect(status).toContain("already saved");
   });
 });
