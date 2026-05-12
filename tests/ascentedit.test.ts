@@ -259,6 +259,49 @@ describe("init — resilience to missing fields", () => {
   });
 });
 
+describe("init — SW tab-mapping fallback (post-save hash stripping)", () => {
+  it("uses chrome.runtime.sendMessage to resolve stravaId when hash is gone", async () => {
+    // Override sendMessage to return the mapping the SW would.
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValue({
+        ok: true,
+        mapping: { stravaId: STRAVA_ID, peakId: PEAK_ID },
+      });
+    (globalThis as unknown as {
+      chrome: { runtime: { sendMessage: typeof sendMessage } };
+    }).chrome.runtime.sendMessage = sendMessage;
+
+    setUrl(
+      `https://www.peakbagger.com/climber/ascentedit.aspx?pid=${PEAK_ID}&cid=42`,
+    );
+    buildPeakbaggerForm();
+
+    await init();
+
+    expect(sendMessage).toHaveBeenCalledWith({ type: "getTabMapping" });
+    expect(inputByName("DateText").value).toBe("2026-04-15");
+  });
+
+  it("no-ops when SW returns no mapping", async () => {
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValue({ ok: true, mapping: null });
+    (globalThis as unknown as {
+      chrome: { runtime: { sendMessage: typeof sendMessage } };
+    }).chrome.runtime.sendMessage = sendMessage;
+
+    setUrl(
+      `https://www.peakbagger.com/climber/ascentedit.aspx?pid=${PEAK_ID}&cid=42`,
+    );
+    buildPeakbaggerForm();
+
+    await init();
+
+    expect(inputByName("DateText").value).toBe("");
+  });
+});
+
 describe("init — post-save state", () => {
   it("sends ascent-saved with the aid when present", async () => {
     setUrl(

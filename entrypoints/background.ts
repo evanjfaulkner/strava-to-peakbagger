@@ -30,6 +30,45 @@ function errMessage(e: unknown): string {
 }
 
 // ============================================================
+// Per-tab pending-save mapping (chrome.storage.session)
+// ============================================================
+//
+// When the popup opens an Add-Ascent tab, we record the
+// (stravaId, peakId) the tab was opened for. After the user clicks
+// Save, peakbagger's POST→redirect drops the URL hash, so the
+// content script can't recover the stravaId from the URL anymore.
+// It queries the SW via getTabMapping, which reads this map.
+
+type TabMapping = { stravaId: number; peakId: number };
+
+async function getPendingTabSaves(): Promise<Record<number, TabMapping>> {
+  const stored = await chrome.storage.session.get("pendingTabSaves");
+  return (
+    (stored.pendingTabSaves as Record<number, TabMapping> | undefined) ?? {}
+  );
+}
+
+async function setPendingTabSaves(
+  value: Record<number, TabMapping>,
+): Promise<void> {
+  await chrome.storage.session.set({ pendingTabSaves: value });
+}
+
+export async function handleGetTabMapping(
+  tabId: number | undefined,
+): Promise<{ ok: true; mapping: TabMapping | null } | Err> {
+  try {
+    if (tabId === undefined) {
+      return { ok: false, error: "No tab id on sender" };
+    }
+    const pending = await getPendingTabSaves();
+    return { ok: true, mapping: pending[tabId] ?? null };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+// ============================================================
 // Real handlers (popup-facing)
 // ============================================================
 
@@ -151,11 +190,21 @@ export async function handleProcessActivity(
     await set("prefillPayloads", updated);
 
     // Open one tab per match, sequentially (so Chrome stages them
-    // properly without overloading the tab strip).
+    // properly without overloading the tab strip). For each opened
+    // tab, record a (tabId → {stravaId, peakId}) mapping in session
+    // storage so the content script can recover the identity after
+    // a post-save reload (peakbagger's POST→redirect strips URL
+    // hashes, so the `#s2p=` token we embed in the URL only
+    // survives the initial page load).
+    const sessionPending = await getPendingTabSaves();
     for (const m of unprocessedMatches) {
       const url = `${PEAKBAGGER_ASCENT_URL}?pid=${m.peak.peakId}&cid=${cid}#s2p=${stravaId}`;
-      await chrome.tabs.create({ url, active: false });
+      const tab = await chrome.tabs.create({ url, active: false });
+      if (tab.id !== undefined) {
+        sessionPending[tab.id] = { stravaId, peakId: m.peak.peakId };
+      }
     }
+    await setPendingTabSaves(sessionPending);
 
     return {
       ok: true,
@@ -341,6 +390,16 @@ export default defineBackground(() => {
       return true;
     }
 
+    // Content-script fallback: when peakbagger strips the URL hash
+    // on post-save reload, the content script can't read stravaId
+    // from #s2p=. It asks us for the mapping by sender tab id.
+    if (type === "getTabMapping") {
+      void handleGetTabMapping(_sender.tab?.id).then(sendResponse).catch(
+        (e: unknown) => sendResponse({ ok: false, error: errMessage(e) }),
+      );
+      return true;
+    }
+
     // Dev handlers — same shape as before.
     if (type === "dev:list") {
       void handleDevList()
@@ -401,6 +460,17 @@ export default defineBackground(() => {
     }
 
     return false;
+  });
+
+  // Clean up the per-tab pending-save mapping when a tab closes.
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    void (async () => {
+      const pending = await getPendingTabSaves();
+      if (pending[tabId]) {
+        delete pending[tabId];
+        await setPendingTabSaves(pending);
+      }
+    })();
   });
 
   (

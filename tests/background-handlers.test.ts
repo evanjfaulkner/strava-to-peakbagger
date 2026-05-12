@@ -21,6 +21,7 @@ let handleProcessActivity: typeof import("../entrypoints/background").handleProc
 let handleAscentSaved: typeof import("../entrypoints/background").handleAscentSaved;
 let handleMarkActivityHidden: typeof import("../entrypoints/background").handleMarkActivityHidden;
 let handleMarkActivityUnhidden: typeof import("../entrypoints/background").handleMarkActivityUnhidden;
+let handleGetTabMapping: typeof import("../entrypoints/background").handleGetTabMapping;
 
 beforeAll(async () => {
   const mod = await import("../entrypoints/background");
@@ -30,6 +31,7 @@ beforeAll(async () => {
   handleAscentSaved = mod.handleAscentSaved;
   handleMarkActivityHidden = mod.handleMarkActivityHidden;
   handleMarkActivityUnhidden = mod.handleMarkActivityUnhidden;
+  handleGetTabMapping = mod.handleGetTabMapping;
 });
 
 const FAR_FUTURE = 9_999_999_999;
@@ -457,5 +459,100 @@ describe("handleMarkActivityUnhidden", () => {
     expect(res).toEqual({ ok: true, unhiddenCount: 0 });
     const processed = storage.bag["processed"] as Record<string, unknown>;
     expect(Object.keys(processed)).toEqual(["777:1"]); // untouched
+  });
+});
+
+describe("handleGetTabMapping", () => {
+  it("returns the mapping for a known tabId", async () => {
+    storage.sessionBag["pendingTabSaves"] = {
+      42: { stravaId: 123, peakId: 5 },
+    };
+    const res = await handleGetTabMapping(42);
+    expect(res).toEqual({ ok: true, mapping: { stravaId: 123, peakId: 5 } });
+  });
+
+  it("returns mapping=null for an unknown tabId", async () => {
+    storage.sessionBag["pendingTabSaves"] = {
+      42: { stravaId: 123, peakId: 5 },
+    };
+    const res = await handleGetTabMapping(99);
+    expect(res).toEqual({ ok: true, mapping: null });
+  });
+
+  it("errors when sender.tab.id is undefined", async () => {
+    const res = await handleGetTabMapping(undefined);
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe("processActivity — pendingTabSaves write", () => {
+  it("records tabId → (stravaId, peakId) for each opened tab", async () => {
+    storage.bag["pb"] = { climberId: 99 };
+    storage.bag["activities"] = [
+      {
+        id: 12345678901,
+        start: "2026-04-15T17:00:00Z",
+        startLocal: "2026-04-15T10:00:00",
+        tz: "America/Los_Angeles",
+        name: "Test Hike",
+        sportType: "Hike",
+        distanceM: 8000,
+        elevGainM: 600,
+      },
+    ];
+    storage.bag["settings"] = {
+      horizM: 75,
+      vertM: 25,
+      lookbackDays: 90,
+      blacklist: [],
+    };
+    const peakXml = `<ts><t i="4242" a="37.7" o="-122.4" n="Test"/></ts>`;
+    const streamsBody = {
+      latlng: {
+        data: [
+          [37.6, -122.4],
+          [37.7, -122.4],
+          [37.8, -122.4],
+        ],
+      },
+      altitude: { data: [1000, 1500, 1200] },
+      time: { data: [0, 1800, 3600] },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url.includes("/streams")) {
+          return Promise.resolve(
+            new Response(JSON.stringify(streamsBody), { status: 200 }),
+          );
+        }
+        if (url.includes("PLLBB.aspx")) {
+          return Promise.resolve(
+            new Response(peakXml, {
+              status: 200,
+              headers: { "Content-Type": "application/xml" },
+            }),
+          );
+        }
+        if (url.includes("/api/v3/activities/")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ timezone: "(GMT-08:00) America/Los_Angeles" }),
+              { status: 200 },
+            ),
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    await handleProcessActivity(12345678901);
+
+    const pending = storage.sessionBag["pendingTabSaves"] as Record<
+      number,
+      { stravaId: number; peakId: number }
+    >;
+    // tabsCreated.length === 1 → fake-chrome assigned tab id 1.
+    expect(pending[1]).toEqual({ stravaId: 12345678901, peakId: 4242 });
   });
 });

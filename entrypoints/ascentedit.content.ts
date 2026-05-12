@@ -39,7 +39,7 @@ const SAVED_MARKER = "Saved Successfully";
 export async function init(): Promise<void> {
   const url = new URL(window.location.href);
   const pidStr = url.searchParams.get("pid");
-  const pid = pidStr ? Number(pidStr) : NaN;
+  let pid = pidStr ? Number(pidStr) : NaN;
   // Peakbagger uses negative peakIds for some unofficial / user-
   // contributed peaks (e.g. pid=-200643). Accept any finite integer.
   if (!Number.isFinite(pid)) {
@@ -47,14 +47,32 @@ export async function init(): Promise<void> {
     return;
   }
 
+  // Prefer the URL hash for stravaId (set by the popup when opening
+  // the tab). Falls back to the SW's per-tab mapping for the
+  // post-save reload case: peakbagger's POST→redirect strips the
+  // hash, so we can't read it after the form submits.
   const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   const stravaIdStr = hashParams.get("s2p");
-  const stravaId = stravaIdStr ? Number(stravaIdStr) : NaN;
-  if (!Number.isFinite(stravaId) || stravaId <= 0) {
-    console.debug(
-      "[s2p] no #s2p=<stravaId> in URL hash; content script no-op",
-    );
-    return;
+  const stravaIdFromHash = stravaIdStr ? Number(stravaIdStr) : NaN;
+
+  let stravaId: number;
+  if (Number.isFinite(stravaIdFromHash) && stravaIdFromHash > 0) {
+    stravaId = stravaIdFromHash;
+  } else {
+    const res = (await chrome.runtime.sendMessage({
+      type: "getTabMapping",
+    })) as { ok: true; mapping: { stravaId: number; peakId: number } | null } | { ok: false; error: string };
+    if (!res?.ok || !res.mapping) {
+      console.debug(
+        "[s2p] no #s2p hash and no SW tab mapping; content script no-op",
+      );
+      return;
+    }
+    stravaId = res.mapping.stravaId;
+    // The SW mapping is authoritative for both stravaId and pid —
+    // use it for pid too in case our URL parse is off (e.g. ASP.NET
+    // postback adds aid= but keeps pid=).
+    pid = res.mapping.peakId;
   }
 
   const stored = await chrome.storage.local.get("prefillPayloads");
