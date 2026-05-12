@@ -44,6 +44,9 @@ export type PrefillPayload = {
   ascentTypeRBL: "S";
   journalText: string;
   suffixText: string;
+  // → peakbagger's "URL Link to External Trip Report" form field.
+  //   Exact ASP.NET field name TBD in Step 9 (DevTools inspection).
+  externalUrl: string;
   startFt: number;
   endFt: number;
   gainFt: number;
