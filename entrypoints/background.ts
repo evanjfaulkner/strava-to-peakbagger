@@ -1,7 +1,7 @@
 import KDBush from "kdbush";
-import { DEFAULT_MATCH_THRESHOLDS, matchSummits } from "../lib/matcher";
+import { matchSummits } from "../lib/matcher";
 import { peaksForTrack } from "../lib/peakbagger";
-import { get } from "../lib/storage";
+import { get, getSettings } from "../lib/storage";
 import { fetchActivitiesSince, fetchStreams } from "../lib/strava";
 
 const DEV_LIST_WINDOW_MS = 7 * 24 * 3600 * 1000;
@@ -142,6 +142,7 @@ async function handleDevList(): Promise<number> {
 
 async function handleDevMatch(activityId: number): Promise<number> {
   try {
+    const settings = await getSettings();
     const cached = (await get("activities")) ?? [];
     const summary = cached.find((a) => a.id === activityId);
     if (!summary) {
@@ -150,16 +151,16 @@ async function handleDevMatch(activityId: number): Promise<number> {
       );
     }
     const track = await fetchStreams(activityId);
-    const peaks = await peaksForTrack(track, DEFAULT_MATCH_THRESHOLDS.horizM);
+    const peaks = await peaksForTrack(track, settings.horizM);
     const activityStart = new Date(summary.start);
     const matches = matchSummits(
       track,
       peaks,
-      DEFAULT_MATCH_THRESHOLDS,
+      { horizM: settings.horizM, vertM: settings.vertM },
       activityStart,
     );
     console.log(
-      `[s2p] activity ${activityId}: ${peaks.length} candidate peaks → ${matches.length} matched summits (horizM=${DEFAULT_MATCH_THRESHOLDS.horizM}m, vertM=${DEFAULT_MATCH_THRESHOLDS.vertM}m)`,
+      `[s2p] activity ${activityId}: ${peaks.length} candidate peaks → ${matches.length} matched summits (horizM=${settings.horizM}m, vertM=${settings.vertM}m)`,
     );
     for (const m of matches) {
       console.log(
@@ -178,12 +179,13 @@ async function handleDevNearest(
   n = 20,
 ): Promise<number> {
   try {
+    const settings = await getSettings();
     const track = await fetchStreams(activityId);
     if (track.points.length === 0) {
       console.warn(`[s2p] activity ${activityId} has no track points`);
       return 0;
     }
-    const peaks = await peaksForTrack(track, DEFAULT_MATCH_THRESHOLDS.horizM);
+    const peaks = await peaksForTrack(track, settings.horizM);
 
     // Project + index track (same math as the matcher; this is a
     // debug-only path so we re-do it inline rather than exporting
@@ -252,8 +254,9 @@ async function handleDevNearest(
 
 async function handleDevPeaks(activityId: number): Promise<number> {
   try {
+    const settings = await getSettings();
     const track = await fetchStreams(activityId);
-    const peaks = await peaksForTrack(track, DEFAULT_MATCH_THRESHOLDS.horizM);
+    const peaks = await peaksForTrack(track, settings.horizM);
     console.log(
       `[s2p] activity ${activityId}: track has ${track.points.length} points, found ${peaks.length} candidate peaks`,
     );
