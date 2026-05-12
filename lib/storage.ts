@@ -48,7 +48,7 @@ export type Storage = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  horizM: 30,
+  horizM: 75,
   vertM: 25,
   lookbackDays: 90,
   blacklist: [

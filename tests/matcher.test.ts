@@ -179,7 +179,7 @@ describe("one match per (peak, track) pair", () => {
 });
 
 describe("DEFAULT_MATCH_THRESHOLDS", () => {
-  it("exports { horizM: 30, vertM: 25 }", () => {
-    expect(DEFAULT_MATCH_THRESHOLDS).toEqual({ horizM: 30, vertM: 25 });
+  it("exports { horizM: 75, vertM: 25 }", () => {
+    expect(DEFAULT_MATCH_THRESHOLDS).toEqual({ horizM: 75, vertM: 25 });
   });
 });

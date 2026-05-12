@@ -6,8 +6,14 @@ export type MatchThresholds = {
   vertM: number;
 };
 
+// Defaults tuned against real ski-tour data. 75 m horizontal handles
+// the common stack of (GPS drift on fast watch-on-wrist tracks) +
+// (peakbagger's crowdsourced summit coords being 20–40 m off) +
+// (skinning to within ~30 m of the true summit before turning back).
+// 25 m vertical is dormant in v1 because PLLBB.aspx doesn't return
+// elevation, so the horizontal gate is the only filter in practice.
 export const DEFAULT_MATCH_THRESHOLDS: MatchThresholds = {
-  horizM: 30,
+  horizM: 75,
   vertM: 25,
 };
 
