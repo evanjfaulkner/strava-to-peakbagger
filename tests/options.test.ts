@@ -1,13 +1,28 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../lib/storage";
-import { init } from "../entrypoints/options/main";
 import { installFakeChromeStorage } from "./fakeChromeStorage";
+
+vi.mock("../lib/oauth", () => ({
+  connectStrava: vi.fn(),
+  isConnected: vi.fn(),
+}));
+
+const { connectStrava, isConnected } = await import("../lib/oauth");
+const { init } = await import("../entrypoints/options/main");
 
 // Minimal DOM that matches entrypoints/options/index.html. The test
 // is the contract — if the production markup drifts in a way that
 // removes/renames an id, the assertions here fail loudly.
-const FORM_HTML = `
+const PAGE_HTML = `
+  <section id="connection">
+    <button id="connect-btn" type="button" disabled>Connect Strava</button>
+    <p id="connect-status" role="status"></p>
+    <div id="connected-block" hidden>
+      <p>Connected as <strong id="athlete-name"></strong>
+      (#<span id="athlete-id"></span>)</p>
+    </div>
+  </section>
   <form id="options-form" novalidate>
     <input id="clientId" name="clientId" type="text" />
     <input id="clientSecret" name="clientSecret" type="password" />
@@ -32,15 +47,32 @@ function textarea(id: string): HTMLTextAreaElement {
   return node;
 }
 
+function button(id: string): HTMLButtonElement {
+  const node = document.getElementById(id);
+  if (!(node instanceof HTMLButtonElement)) throw new Error(`#${id} missing`);
+  return node;
+}
+
+function text(id: string): string {
+  return document.getElementById(id)?.textContent ?? "";
+}
+
 function statusText(): string {
   return document.getElementById("status")?.textContent ?? "";
+}
+
+function flushAsync(): Promise<void> {
+  return new Promise((r) => setTimeout(r, 0));
 }
 
 let storage: ReturnType<typeof installFakeChromeStorage>;
 
 beforeEach(() => {
   storage = installFakeChromeStorage();
-  document.body.innerHTML = FORM_HTML;
+  document.body.innerHTML = PAGE_HTML;
+  vi.mocked(connectStrava).mockReset();
+  vi.mocked(isConnected).mockReset();
+  vi.mocked(isConnected).mockResolvedValue(false);
 });
 
 describe("options page — init", () => {
@@ -85,9 +117,8 @@ describe("options page — submit", () => {
     form.dispatchEvent(
       new Event("submit", { bubbles: true, cancelable: true }),
     );
-    // Let the async submit handler finish writing storage.
-    await new Promise((r) => setTimeout(r, 0));
-    await new Promise((r) => setTimeout(r, 0));
+    await flushAsync();
+    await flushAsync();
   }
 
   it("persists settings and creds", async () => {
@@ -162,5 +193,87 @@ describe("options page — submit", () => {
 
     const settings = storage.bag["settings"] as { blacklist: string[] };
     expect(settings.blacklist).toEqual(["Yoga", "Workout", "Swim"]);
+  });
+});
+
+describe("options page — connect button", () => {
+  async function clickConnect(): Promise<void> {
+    button("connect-btn").click();
+    await flushAsync();
+    await flushAsync();
+  }
+
+  it("is disabled when creds are empty", async () => {
+    await init();
+    expect(button("connect-btn").disabled).toBe(true);
+  });
+
+  it("enables when creds are typed", async () => {
+    await init();
+
+    input("clientId").value = "abc";
+    input("clientId").dispatchEvent(new Event("input", { bubbles: true }));
+    expect(button("connect-btn").disabled).toBe(true); // still missing secret
+
+    input("clientSecret").value = "shh";
+    input("clientSecret").dispatchEvent(new Event("input", { bubbles: true }));
+    expect(button("connect-btn").disabled).toBe(false);
+  });
+
+  it("renders connected block on successful connect", async () => {
+    storage.bag["strava"] = { clientId: "abc", clientSecret: "shh" };
+    vi.mocked(connectStrava).mockResolvedValue({
+      athleteId: 12345,
+      firstname: "Evan",
+      lastname: "Faulkner",
+    });
+
+    await init();
+    await clickConnect();
+
+    expect(document.getElementById("connected-block")?.hasAttribute("hidden"))
+      .toBe(false);
+    expect(text("athlete-name")).toBe("Evan Faulkner");
+    expect(text("athlete-id")).toBe("12345");
+    expect(button("connect-btn").textContent).toBe("Reconnect");
+    expect(text("connect-status")).toBe("");
+  });
+
+  it("surfaces the error on a failed connect", async () => {
+    storage.bag["strava"] = { clientId: "abc", clientSecret: "shh" };
+    vi.mocked(connectStrava).mockRejectedValue(
+      new Error("Strava authorization was cancelled"),
+    );
+
+    await init();
+    await clickConnect();
+
+    expect(text("connect-status")).toContain("cancelled");
+    expect(document.getElementById("connected-block")?.hasAttribute("hidden"))
+      .toBe(true);
+    expect(button("connect-btn").disabled).toBe(false);
+  });
+
+  it("renders connected block on init when already connected", async () => {
+    storage.bag["strava"] = {
+      clientId: "abc",
+      clientSecret: "shh",
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 9_999_999_999,
+      athleteId: 12345,
+      athleteFirstname: "Evan",
+      athleteLastname: "Faulkner",
+    };
+    vi.mocked(isConnected).mockResolvedValue(true);
+
+    await init();
+
+    expect(document.getElementById("connected-block")?.hasAttribute("hidden"))
+      .toBe(false);
+    expect(text("athlete-name")).toBe("Evan Faulkner");
+    expect(text("athlete-id")).toBe("12345");
+    expect(button("connect-btn").textContent).toBe("Reconnect");
+    expect(vi.mocked(connectStrava)).not.toHaveBeenCalled();
   });
 });

@@ -10,6 +10,32 @@
     <main>
       <h1>Options</h1>
 
+      <section id="connection">
+        <h2>Connection</h2>
+        <p class="hint">
+          Create a personal Strava API app at
+          <a
+            href="https://www.strava.com/settings/api"
+            target="_blank"
+            rel="noopener"
+            >strava.com/settings/api</a
+          >
+          and set its <strong>Authorization Callback Domain</strong> to
+          <code>chromiumapp.org</code>. Then paste your Client ID and Client
+          secret below, Save, and click Connect Strava.
+        </p>
+        <div class="connect-row">
+          <button id="connect-btn" type="button" disabled>Connect Strava</button>
+          <p id="connect-status" role="status" aria-live="polite"></p>
+        </div>
+        <div id="connected-block" class="connected-block" hidden>
+          <p>
+            Connected as <strong id="athlete-name"></strong>
+            (#<span id="athlete-id"></span>)
+          </p>
+        </div>
+      </section>
+
       <form id="options-form" novalidate>
         <section>
           <h2>Strava</h2>

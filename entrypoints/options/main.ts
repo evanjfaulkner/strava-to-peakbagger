@@ -1,4 +1,6 @@
+import { connectStrava, isConnected } from "../../lib/oauth";
 import {
+  get,
   getSettings,
   getStravaCreds,
   setSettings,
@@ -8,9 +10,7 @@ import type { Settings } from "../../lib/storage";
 
 const STATUS_CLEAR_MS = 4000;
 
-type Field = "clientId" | "clientSecret" | "horizM" | "vertM" | "lookbackDays" | "blacklist";
-
-function el<T extends HTMLElement>(id: Field | "status" | "options-form"): T {
+function el<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
   if (!node) throw new Error(`options page is missing #${id}`);
   return node as T;
@@ -30,6 +30,10 @@ function setStatus(message: string, autoClear = true): void {
   }
 }
 
+function setConnectStatus(message: string): void {
+  el<HTMLElement>("connect-status").textContent = message;
+}
+
 function parseIntInRange(
   raw: string,
   min: number,
@@ -39,6 +43,26 @@ function parseIntInRange(
   const n = Number(raw);
   if (!Number.isInteger(n) || n < min || n > max) return null;
   return n;
+}
+
+function updateConnectButtonEnabled(): void {
+  const cid = el<HTMLInputElement>("clientId").value.trim();
+  const secret = el<HTMLInputElement>("clientSecret").value.trim();
+  const btn = el<HTMLButtonElement>("connect-btn");
+  btn.disabled = !(cid && secret);
+}
+
+function renderConnected(
+  firstname: string | undefined,
+  lastname: string | undefined,
+  athleteId: number | undefined,
+): void {
+  const name = [firstname, lastname].filter(Boolean).join(" ") || "Strava athlete";
+  el<HTMLElement>("athlete-name").textContent = name;
+  el<HTMLElement>("athlete-id").textContent =
+    athleteId !== undefined ? String(athleteId) : "—";
+  el<HTMLElement>("connected-block").hidden = false;
+  el<HTMLButtonElement>("connect-btn").textContent = "Reconnect";
 }
 
 export async function init(): Promise<void> {
@@ -56,10 +80,49 @@ export async function init(): Promise<void> {
   el<HTMLInputElement>("lookbackDays").value = String(settings.lookbackDays);
   el<HTMLTextAreaElement>("blacklist").value = settings.blacklist.join("\n");
 
+  updateConnectButtonEnabled();
+  el<HTMLInputElement>("clientId").addEventListener(
+    "input",
+    updateConnectButtonEnabled,
+  );
+  el<HTMLInputElement>("clientSecret").addEventListener(
+    "input",
+    updateConnectButtonEnabled,
+  );
+
+  if (await isConnected()) {
+    const strava = await get("strava");
+    renderConnected(
+      strava?.athleteFirstname,
+      strava?.athleteLastname,
+      strava?.athleteId,
+    );
+  }
+
+  el<HTMLButtonElement>("connect-btn").addEventListener("click", () => {
+    void handleConnect();
+  });
+
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     void handleSubmit();
   });
+}
+
+async function handleConnect(): Promise<void> {
+  const btn = el<HTMLButtonElement>("connect-btn");
+  btn.disabled = true;
+  setConnectStatus("Connecting…");
+
+  try {
+    const result = await connectStrava();
+    setConnectStatus("");
+    renderConnected(result.firstname, result.lastname, result.athleteId);
+  } catch (e) {
+    setConnectStatus(e instanceof Error ? e.message : String(e));
+  } finally {
+    updateConnectButtonEnabled();
+  }
 }
 
 async function handleSubmit(): Promise<void> {
