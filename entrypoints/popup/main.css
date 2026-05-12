@@ -1,17 +1,142 @@
 :root {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.4;
+  color: #1f2937;
 }
 
 body {
   margin: 0;
-  padding: 12px 16px;
-  min-width: 360px;
+  padding: 0;
+  background: #ffffff;
+}
+
+main {
+  width: 380px;
+  max-height: 560px;
+  overflow-y: auto;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 h1 {
-  margin: 0 0 8px;
-  font-size: 16px;
+  margin: 0;
+  font-size: 14px;
   font-weight: 600;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 10px;
+  border: 1px solid #2563eb;
+  background: #2563eb;
+  color: white;
+  border-radius: 4px;
+}
+
+button:hover {
+  background: #1d4ed8;
+}
+
+button:disabled {
+  background: #9ca3af;
+  border-color: #9ca3af;
+  cursor: not-allowed;
+}
+
+#status {
+  margin: 0;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: #6b7280;
+  min-height: 1em;
+}
+
+.warning {
+  margin: 0;
+  padding: 8px 14px;
+  background: #fef3c7;
+  border-bottom: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 12px;
+}
+
+.empty {
+  padding: 24px 14px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+#activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.activity {
+  padding: 8px 14px;
+  border-bottom: 1px solid #f3f4f6;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 2px 12px;
+  align-items: center;
+}
+
+.activity:hover {
+  background: #f9fafb;
+}
+
+.activity-meta {
+  font-size: 11px;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  display: flex;
+  gap: 8px;
+}
+
+.activity-sport {
+  font-weight: 500;
+}
+
+.activity-name {
+  grid-column: 1 / 2;
+  font-weight: 500;
+  color: #111827;
+  word-break: break-word;
+}
+
+.activity-actions {
+  grid-column: 2 / 3;
+  grid-row: 1 / 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.open-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.row-status {
+  margin: 0;
+  font-size: 10px;
+  color: #6b7280;
+  min-height: 1em;
+  text-align: right;
 }
