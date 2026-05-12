@@ -1,3 +1,4 @@
+import KDBush from "kdbush";
 import { DEFAULT_MATCH_THRESHOLDS, matchSummits } from "../lib/matcher";
 import { peaksForTrack } from "../lib/peakbagger";
 import { get } from "../lib/storage";
@@ -71,6 +72,28 @@ export default defineBackground(() => {
         );
       return true;
     }
+    if (msg?.type === "dev:nearest") {
+      const activityId = Number(msg?.activityId);
+      const n = Number.isFinite(Number(msg?.n)) ? Number(msg.n) : 20;
+      if (!Number.isFinite(activityId)) {
+        sendResponse({
+          ok: false,
+          error: "dev:nearest requires { activityId: number, n?: number }",
+        } satisfies DevResponse);
+        return true;
+      }
+      void handleDevNearest(activityId, n)
+        .then((count) =>
+          sendResponse({ ok: true, count } satisfies DevResponse),
+        )
+        .catch((err: unknown) =>
+          sendResponse({
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          } satisfies DevResponse),
+        );
+      return true;
+    }
     return false;
   });
 
@@ -86,12 +109,14 @@ export default defineBackground(() => {
         devList: () => Promise<number>;
         devPeaks: (activityId: number) => Promise<number>;
         devMatch: (activityId: number) => Promise<number>;
+        devNearest: (activityId: number, n?: number) => Promise<number>;
       };
     }
   ).s2p = {
     devList: handleDevList,
     devPeaks: handleDevPeaks,
     devMatch: handleDevMatch,
+    devNearest: handleDevNearest,
   };
 });
 
@@ -144,6 +169,83 @@ async function handleDevMatch(activityId: number): Promise<number> {
     return matches.length;
   } catch (err) {
     console.error(`[s2p] dev:match failed for activity ${activityId}:`, err);
+    throw err;
+  }
+}
+
+async function handleDevNearest(
+  activityId: number,
+  n = 20,
+): Promise<number> {
+  try {
+    const track = await fetchStreams(activityId);
+    if (track.points.length === 0) {
+      console.warn(`[s2p] activity ${activityId} has no track points`);
+      return 0;
+    }
+    const peaks = await peaksForTrack(track, DEFAULT_MATCH_THRESHOLDS.horizM);
+
+    // Project + index track (same math as the matcher; this is a
+    // debug-only path so we re-do it inline rather than exporting
+    // the projection helpers).
+    let latSum = 0;
+    for (const p of track.points) latSum += p.lat;
+    const lat0 = latSum / track.points.length;
+    const cosLat0 = Math.cos((lat0 * Math.PI) / 180);
+    const mPerDegLng = 111_000 * cosLat0;
+    const projectX = (lng: number): number => lng * mPerDegLng;
+    const projectY = (lat: number): number => lat * 111_000;
+
+    const trackX = new Float64Array(track.points.length);
+    const trackY = new Float64Array(track.points.length);
+    for (let i = 0; i < track.points.length; i++) {
+      const p = track.points[i]!;
+      trackX[i] = projectX(p.lng);
+      trackY[i] = projectY(p.lat);
+    }
+
+    const tree = new KDBush(track.points.length);
+    for (let i = 0; i < track.points.length; i++) {
+      tree.add(trackX[i]!, trackY[i]!);
+    }
+    tree.finish();
+
+    // For each peak, find min distance to any track point. Use a 50 km
+    // search radius so kdbush returns essentially every track point —
+    // the bbox is already constrained to within ~30 m of the track via
+    // peaksForTrack, so this is just "find the closest match."
+    const SEARCH_RADIUS_M = 50_000;
+    const results: { peakId: number; name: string; distM: number }[] = [];
+    for (const peak of peaks) {
+      const px = projectX(peak.lng);
+      const py = projectY(peak.lat);
+      const candidates = tree.within(px, py, SEARCH_RADIUS_M);
+      if (candidates.length === 0) continue;
+
+      let bestDist = Infinity;
+      for (const idx of candidates) {
+        const dx = trackX[idx]! - px;
+        const dy = trackY[idx]! - py;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestDist) bestDist = d;
+      }
+      results.push({ peakId: peak.peakId, name: peak.name, distM: bestDist });
+    }
+
+    results.sort((a, b) => a.distM - b.distM);
+    const topN = results.slice(0, n);
+
+    console.log(
+      `[s2p] activity ${activityId}: ${peaks.length} candidates; top ${topN.length} nearest:`,
+    );
+    for (const r of topN) {
+      console.log(
+        `  ${r.distM.toFixed(1).padStart(7)}m  #${String(r.peakId).padEnd(7)} ${r.name}  https://peakbagger.com/peak.aspx?pid=${r.peakId}`,
+      );
+    }
+    return topN.length;
+  } catch (err) {
+    console.error(`[s2p] dev:nearest failed for activity ${activityId}:`, err);
     throw err;
   }
 }
