@@ -81,7 +81,7 @@ async function handleDevList(): Promise<number> {
     );
     for (const a of list.slice(0, 5)) {
       console.log(
-        `  ${a.start.slice(0, 10)}  ${a.sportType.padEnd(15)}  ${a.name}`,
+        `  ${String(a.id).padEnd(12)}  ${a.start.slice(0, 10)}  ${a.sportType.padEnd(15)}  ${a.name}`,
       );
     }
     return list.length;
