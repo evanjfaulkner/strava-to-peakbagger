@@ -10,12 +10,14 @@ export type FakeChrome = {
     }) => Promise<string>;
   };
   messages: unknown[];
+  tabsCreated: { url: string; active?: boolean }[];
   reset: () => void;
 };
 
 export function installFakeChromeStorage(initial: Bag = {}): FakeChrome {
   const bag: Bag = { ...initial };
   const messages: unknown[] = [];
+  const tabsCreated: { url: string; active?: boolean }[] = [];
 
   const identity = {
     getRedirectURL: () => "https://test-extension.chromiumapp.org/",
@@ -58,6 +60,12 @@ export function installFakeChromeStorage(initial: Bag = {}): FakeChrome {
         return undefined;
       },
     },
+    tabs: {
+      async create(options: { url: string; active?: boolean }) {
+        tabsCreated.push(options);
+        return { id: tabsCreated.length };
+      },
+    },
   };
 
   (globalThis as unknown as { chrome: unknown }).chrome = fake;
@@ -66,9 +74,11 @@ export function installFakeChromeStorage(initial: Bag = {}): FakeChrome {
     bag,
     identity,
     messages,
+    tabsCreated,
     reset() {
       for (const k of Object.keys(bag)) delete bag[k];
       messages.length = 0;
+      tabsCreated.length = 0;
     },
   };
 }

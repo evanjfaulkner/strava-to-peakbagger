@@ -1,108 +1,238 @@
 import KDBush from "kdbush";
 import { matchSummits } from "../lib/matcher";
 import { peaksForTrack } from "../lib/peakbagger";
-import { get, getSettings } from "../lib/storage";
+import { buildPrefill } from "../lib/prefill";
+import {
+  get,
+  getClimberId,
+  getSettings,
+  set,
+} from "../lib/storage";
+import type { Settings } from "../lib/storage";
 import { fetchActivitiesSince, fetchStreams } from "../lib/strava";
+import type {
+  ActivitySummary,
+  Match,
+  PrefillPayload,
+  Track,
+} from "../lib/models";
 
 const DEV_LIST_WINDOW_MS = 7 * 24 * 3600 * 1000;
+const PEAKBAGGER_ASCENT_URL =
+  "https://www.peakbagger.com/climber/ascentedit.aspx";
 
-type DevResponse =
-  | { ok: true; count: number }
-  | { ok: false; error: string };
+type Ok<T> = { ok: true } & T;
+type Err = { ok: false; error: string };
+type Resp<T> = Ok<T> | Err;
+
+function errMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+// ============================================================
+// Real handlers (popup-facing)
+// ============================================================
+
+export async function handleGetActivities(): Promise<
+  Resp<{ activities: ActivitySummary[] }>
+> {
+  try {
+    const activities = (await get("activities")) ?? [];
+    return { ok: true, activities };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+export async function handleRefreshActivities(): Promise<
+  Resp<{ count: number }>
+> {
+  try {
+    const settings = await getSettings();
+    const after = new Date(
+      Date.now() - settings.lookbackDays * 86400 * 1000,
+    );
+    const list = await fetchActivitiesSince(after);
+    return { ok: true, count: list.length };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+export async function handleProcessActivity(
+  stravaId: number,
+): Promise<Resp<{ openedCount: number }>> {
+  try {
+    if (!Number.isFinite(stravaId) || stravaId <= 0) {
+      return { ok: false, error: "Invalid stravaId" };
+    }
+
+    const cid = await getClimberId();
+    if (cid === undefined) {
+      return {
+        ok: false,
+        error:
+          "Peakbagger climber ID not set — open the Options page and enter your cid first",
+      };
+    }
+
+    const settings = await getSettings();
+    const { activity, track, matches } = await matchActivity(
+      stravaId,
+      settings,
+    );
+
+    if (matches.length === 0) {
+      return { ok: true, openedCount: 0 };
+    }
+
+    // Build prefill payloads and merge with any existing.
+    const current =
+      (await get("prefillPayloads")) ?? ({} as Record<string, PrefillPayload>);
+    const updated = { ...current };
+    for (const m of matches) {
+      const key = `${stravaId}:${m.peak.peakId}`;
+      updated[key] = buildPrefill(track, m, activity);
+    }
+    await set("prefillPayloads", updated);
+
+    // Open one tab per match, sequentially (so Chrome stages them
+    // properly without overloading the tab strip).
+    for (const m of matches) {
+      const url = `${PEAKBAGGER_ASCENT_URL}?pid=${m.peak.peakId}&cid=${cid}#s2p=${stravaId}`;
+      await chrome.tabs.create({ url, active: false });
+    }
+
+    return { ok: true, openedCount: matches.length };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+// Helper: run the full read pipeline for one activity. Throws on
+// either "activity not in cache" or any downstream error.
+async function matchActivity(
+  stravaId: number,
+  settings: Settings,
+): Promise<{ activity: ActivitySummary; track: Track; matches: Match[] }> {
+  const cached = (await get("activities")) ?? [];
+  const activity = cached.find((a) => a.id === stravaId);
+  if (!activity) {
+    throw new Error("Activity not in cache — click Refresh first");
+  }
+  const track = await fetchStreams(stravaId);
+  const peaks = await peaksForTrack(track, settings.horizM);
+  const activityStart = new Date(activity.start);
+  const matches = matchSummits(
+    track,
+    peaks,
+    { horizM: settings.horizM, vertM: settings.vertM },
+    activityStart,
+  );
+  return { activity, track, matches };
+}
+
+// ============================================================
+// Service worker entrypoint
+// ============================================================
 
 export default defineBackground(() => {
   console.log("strava-to-peakbagger background worker loaded");
 
-  // Top-level listener registration is the canonical MV3 pattern —
-  // Chrome will rehydrate listeners synchronously when the SW wakes.
-  // Called from popup/options/content-script contexts.
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg?.type === "dev:list") {
+    const type = msg?.type;
+
+    // Popup-facing handlers
+    if (type === "getActivities") {
+      void handleGetActivities().then(sendResponse).catch((e: unknown) =>
+        sendResponse({ ok: false, error: errMessage(e) }),
+      );
+      return true;
+    }
+    if (type === "refreshActivities") {
+      void handleRefreshActivities().then(sendResponse).catch((e: unknown) =>
+        sendResponse({ ok: false, error: errMessage(e) }),
+      );
+      return true;
+    }
+    if (type === "processActivity") {
+      const stravaId = Number(msg?.stravaId);
+      void handleProcessActivity(stravaId).then(sendResponse).catch(
+        (e: unknown) => sendResponse({ ok: false, error: errMessage(e) }),
+      );
+      return true;
+    }
+
+    // Content-script-emitted signal (Step 9). For now, just log.
+    // Step 11 will make this update storage.processed.
+    if (type === "ascent-saved") {
+      console.log("[s2p] ascent saved", msg);
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    // Dev handlers — same shape as before.
+    if (type === "dev:list") {
       void handleDevList()
-        .then((count) =>
-          sendResponse({ ok: true, count } satisfies DevResponse),
-        )
-        .catch((err: unknown) =>
-          sendResponse({
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
-          } satisfies DevResponse),
+        .then((count) => sendResponse({ ok: true, count }))
+        .catch((e: unknown) =>
+          sendResponse({ ok: false, error: errMessage(e) }),
         );
       return true;
     }
-    if (msg?.type === "dev:peaks") {
+    if (type === "dev:peaks") {
       const activityId = Number(msg?.activityId);
       if (!Number.isFinite(activityId)) {
         sendResponse({
           ok: false,
           error: "dev:peaks requires { activityId: number }",
-        } satisfies DevResponse);
+        });
         return true;
       }
       void handleDevPeaks(activityId)
-        .then((count) =>
-          sendResponse({ ok: true, count } satisfies DevResponse),
-        )
-        .catch((err: unknown) =>
-          sendResponse({
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
-          } satisfies DevResponse),
+        .then((count) => sendResponse({ ok: true, count }))
+        .catch((e: unknown) =>
+          sendResponse({ ok: false, error: errMessage(e) }),
         );
       return true;
     }
-    if (msg?.type === "dev:match") {
+    if (type === "dev:match") {
       const activityId = Number(msg?.activityId);
       if (!Number.isFinite(activityId)) {
         sendResponse({
           ok: false,
           error: "dev:match requires { activityId: number }",
-        } satisfies DevResponse);
+        });
         return true;
       }
       void handleDevMatch(activityId)
-        .then((count) =>
-          sendResponse({ ok: true, count } satisfies DevResponse),
-        )
-        .catch((err: unknown) =>
-          sendResponse({
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
-          } satisfies DevResponse),
+        .then((count) => sendResponse({ ok: true, count }))
+        .catch((e: unknown) =>
+          sendResponse({ ok: false, error: errMessage(e) }),
         );
       return true;
     }
-    if (msg?.type === "dev:nearest") {
+    if (type === "dev:nearest") {
       const activityId = Number(msg?.activityId);
       const n = Number.isFinite(Number(msg?.n)) ? Number(msg.n) : 20;
       if (!Number.isFinite(activityId)) {
         sendResponse({
           ok: false,
           error: "dev:nearest requires { activityId: number, n?: number }",
-        } satisfies DevResponse);
+        });
         return true;
       }
       void handleDevNearest(activityId, n)
-        .then((count) =>
-          sendResponse({ ok: true, count } satisfies DevResponse),
-        )
-        .catch((err: unknown) =>
-          sendResponse({
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
-          } satisfies DevResponse),
+        .then((count) => sendResponse({ ok: true, count }))
+        .catch((e: unknown) =>
+          sendResponse({ ok: false, error: errMessage(e) }),
         );
       return true;
     }
+
     return false;
   });
 
-  // Expose dev hooks directly on the SW global so we can invoke them
-  // from the service-worker DevTools console without going through
-  // chrome.runtime.sendMessage (which can't deliver to its own sender
-  // context). Usage in the SW DevTools console:
-  //   await s2p.devList()
-  //   await s2p.devPeaks(<activity-id>)
   (
     globalThis as unknown as {
       s2p: {
@@ -119,6 +249,11 @@ export default defineBackground(() => {
     devNearest: handleDevNearest,
   };
 });
+
+// ============================================================
+// Dev handlers (kept from earlier steps; not part of the v1 popup
+// flow, but useful for SW-console debugging)
+// ============================================================
 
 async function handleDevList(): Promise<number> {
   const after = new Date(Date.now() - DEV_LIST_WINDOW_MS);
@@ -187,9 +322,6 @@ async function handleDevNearest(
     }
     const peaks = await peaksForTrack(track, settings.horizM);
 
-    // Project + index track (same math as the matcher; this is a
-    // debug-only path so we re-do it inline rather than exporting
-    // the projection helpers).
     let latSum = 0;
     for (const p of track.points) latSum += p.lat;
     const lat0 = latSum / track.points.length;
@@ -212,10 +344,6 @@ async function handleDevNearest(
     }
     tree.finish();
 
-    // For each peak, find min distance to any track point. Use a 50 km
-    // search radius so kdbush returns essentially every track point —
-    // the bbox is already constrained to within ~30 m of the track via
-    // peaksForTrack, so this is just "find the closest match."
     const SEARCH_RADIUS_M = 50_000;
     const results: { peakId: number; name: string; distM: number }[] = [];
     for (const peak of peaks) {

@@ -3,9 +3,11 @@ import {
   DEFAULT_SETTINGS,
   clearStravaTokens,
   get,
+  getClimberId,
   getSettings,
   getStravaCreds,
   set,
+  setClimberId,
   setSettings,
   setStravaCreds,
   setStravaTokens,
@@ -153,5 +155,23 @@ describe("strava tokens", () => {
   it("clearStravaTokens is a no-op when nothing is stored", async () => {
     await clearStravaTokens();
     expect(await get("strava")).toBeUndefined();
+  });
+});
+
+describe("peakbagger climber id", () => {
+  it("getClimberId is undefined when nothing has been stored", async () => {
+    expect(await getClimberId()).toBeUndefined();
+  });
+
+  it("setClimberId writes to storage.pb.climberId", async () => {
+    await setClimberId(42);
+    expect(await getClimberId()).toBe(42);
+    expect(await get("pb")).toEqual({ climberId: 42 });
+  });
+
+  it("setClimberId(undefined) clears the stored id", async () => {
+    storage.bag["pb"] = { climberId: 42 };
+    await setClimberId(undefined);
+    expect(await getClimberId()).toBeUndefined();
   });
 });

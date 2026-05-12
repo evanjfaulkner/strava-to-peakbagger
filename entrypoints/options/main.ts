@@ -1,8 +1,10 @@
 import { connectStrava, isConnected } from "../../lib/oauth";
 import {
   get,
+  getClimberId,
   getSettings,
   getStravaCreds,
+  setClimberId,
   setSettings,
   setStravaCreds,
 } from "../../lib/storage";
@@ -68,13 +70,16 @@ function renderConnected(
 export async function init(): Promise<void> {
   const form = el<HTMLFormElement>("options-form");
 
-  const [settings, creds] = await Promise.all([
+  const [settings, creds, climberId] = await Promise.all([
     getSettings(),
     getStravaCreds(),
+    getClimberId(),
   ]);
 
   el<HTMLInputElement>("clientId").value = creds.clientId;
   el<HTMLInputElement>("clientSecret").value = creds.clientSecret;
+  el<HTMLInputElement>("climberId").value =
+    climberId !== undefined ? String(climberId) : "";
   el<HTMLInputElement>("horizM").value = String(settings.horizM);
   el<HTMLInputElement>("vertM").value = String(settings.vertM);
   el<HTMLInputElement>("lookbackDays").value = String(settings.lookbackDays);
@@ -129,6 +134,17 @@ async function handleSubmit(): Promise<void> {
   const clientId = el<HTMLInputElement>("clientId").value.trim();
   const clientSecret = el<HTMLInputElement>("clientSecret").value.trim();
 
+  const climberIdRaw = el<HTMLInputElement>("climberId").value.trim();
+  let climberId: number | undefined;
+  if (climberIdRaw !== "") {
+    const parsed = parseIntInRange(climberIdRaw, 1, 999_999_999);
+    if (parsed === null) {
+      setStatus("Invalid: climberId must be a positive integer");
+      return;
+    }
+    climberId = parsed;
+  }
+
   const horizM = parseIntInRange(el<HTMLInputElement>("horizM").value, 1, 500);
   if (horizM === null) {
     setStatus("Invalid: horizM must be an integer between 1 and 500");
@@ -159,6 +175,7 @@ async function handleSubmit(): Promise<void> {
   const next: Settings = { horizM, vertM, lookbackDays, blacklist };
 
   await setStravaCreds({ clientId, clientSecret });
+  await setClimberId(climberId);
   await setSettings(next);
 
   const now = new Date();

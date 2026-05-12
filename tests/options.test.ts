@@ -26,6 +26,7 @@ const PAGE_HTML = `
   <form id="options-form" novalidate>
     <input id="clientId" name="clientId" type="text" />
     <input id="clientSecret" name="clientSecret" type="password" />
+    <input id="climberId" name="climberId" type="text" />
     <input id="horizM" name="horizM" type="number" min="1" max="500" />
     <input id="vertM" name="vertM" type="number" min="1" max="500" />
     <input id="lookbackDays" name="lookbackDays" type="number" min="1" max="3650" />
@@ -193,6 +194,37 @@ describe("options page — submit", () => {
 
     const settings = storage.bag["settings"] as { blacklist: string[] };
     expect(settings.blacklist).toEqual(["Yoga", "Workout", "Swim"]);
+  });
+
+  it("round-trips a valid climberId", async () => {
+    await init();
+    input("climberId").value = "12345";
+
+    await submitForm();
+
+    expect(storage.bag["pb"]).toEqual({ climberId: 12345 });
+  });
+
+  it("clears climberId when the field is emptied", async () => {
+    storage.bag["pb"] = { climberId: 42 };
+    await init();
+    expect(input("climberId").value).toBe("42");
+
+    input("climberId").value = "";
+    await submitForm();
+
+    expect(storage.bag["pb"]).toEqual({});
+  });
+
+  it("rejects a non-numeric climberId and does not write settings", async () => {
+    await init();
+    input("climberId").value = "not-a-number";
+
+    await submitForm();
+
+    expect(storage.bag["pb"]).toBeUndefined();
+    expect(storage.bag["settings"]).toBeUndefined();
+    expect(statusText()).toMatch(/Invalid: climberId/);
   });
 });
 

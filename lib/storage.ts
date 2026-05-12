@@ -109,6 +109,19 @@ export async function setStravaTokens(tokens: StravaTokens): Promise<void> {
   await set("strava", { ...current, ...tokens });
 }
 
+export async function getClimberId(): Promise<number | undefined> {
+  const pb = await get("pb");
+  return pb?.climberId;
+}
+
+export async function setClimberId(id: number | undefined): Promise<void> {
+  if (id === undefined) {
+    await set("pb", {});
+  } else {
+    await set("pb", { climberId: id });
+  }
+}
+
 export async function clearStravaTokens(): Promise<void> {
   const current = await get("strava");
   if (!current) return;
