@@ -1,10 +1,29 @@
 type Bag = Record<string, unknown>;
 
-export function installFakeChromeStorage(initial: Bag = {}): {
+export type FakeChrome = {
   bag: Bag;
+  identity: {
+    getRedirectURL: () => string;
+    launchWebAuthFlow: (details: {
+      url: string;
+      interactive?: boolean;
+    }) => Promise<string>;
+  };
   reset: () => void;
-} {
+};
+
+export function installFakeChromeStorage(initial: Bag = {}): FakeChrome {
   const bag: Bag = { ...initial };
+
+  const identity = {
+    getRedirectURL: () => "https://test-extension.chromiumapp.org/",
+    launchWebAuthFlow: async (_details: {
+      url: string;
+      interactive?: boolean;
+    }): Promise<string> => {
+      throw new Error("chrome.identity.launchWebAuthFlow not stubbed");
+    },
+  };
 
   const fake = {
     storage: {
@@ -30,12 +49,14 @@ export function installFakeChromeStorage(initial: Bag = {}): {
         },
       },
     },
+    identity,
   };
 
   (globalThis as unknown as { chrome: unknown }).chrome = fake;
 
   return {
     bag,
+    identity,
     reset() {
       for (const k of Object.keys(bag)) delete bag[k];
     },

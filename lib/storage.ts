@@ -12,6 +12,17 @@ export type Strava = {
   refreshToken?: string;
   expiresAt?: number;
   athleteId?: number;
+  athleteFirstname?: string;
+  athleteLastname?: string;
+};
+
+export type StravaTokens = {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  athleteId: number;
+  athleteFirstname?: string;
+  athleteLastname?: string;
 };
 
 export type Pb = {
@@ -91,4 +102,24 @@ export async function setStravaCreds(creds: {
 }): Promise<void> {
   const current = (await get("strava")) ?? { ...EMPTY_STRAVA };
   await set("strava", { ...current, ...creds });
+}
+
+export async function setStravaTokens(tokens: StravaTokens): Promise<void> {
+  const current = (await get("strava")) ?? { ...EMPTY_STRAVA };
+  await set("strava", { ...current, ...tokens });
+}
+
+export async function clearStravaTokens(): Promise<void> {
+  const current = await get("strava");
+  if (!current) return;
+  const {
+    accessToken: _at,
+    refreshToken: _rt,
+    expiresAt: _ex,
+    athleteId: _aid,
+    athleteFirstname: _af,
+    athleteLastname: _al,
+    ...creds
+  } = current;
+  await set("strava", creds);
 }

@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_SETTINGS,
+  clearStravaTokens,
   get,
   getSettings,
   getStravaCreds,
   set,
   setSettings,
   setStravaCreds,
+  setStravaTokens,
 } from "../lib/storage";
 import type { Storage } from "../lib/storage";
 import { installFakeChromeStorage } from "./fakeChromeStorage";
@@ -100,5 +102,56 @@ describe("strava creds", () => {
       expiresAt: 1234567890,
       athleteId: 99,
     });
+  });
+});
+
+describe("strava tokens", () => {
+  it("setStravaTokens preserves creds and merges in token + athlete fields", async () => {
+    storage.bag["strava"] = { clientId: "cid", clientSecret: "secret" };
+
+    await setStravaTokens({
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 999,
+      athleteId: 7,
+      athleteFirstname: "Evan",
+      athleteLastname: "Faulkner",
+    });
+
+    expect(await get("strava")).toEqual({
+      clientId: "cid",
+      clientSecret: "secret",
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 999,
+      athleteId: 7,
+      athleteFirstname: "Evan",
+      athleteLastname: "Faulkner",
+    });
+  });
+
+  it("clearStravaTokens removes token + athlete fields but keeps creds", async () => {
+    storage.bag["strava"] = {
+      clientId: "cid",
+      clientSecret: "secret",
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 999,
+      athleteId: 7,
+      athleteFirstname: "Evan",
+      athleteLastname: "Faulkner",
+    };
+
+    await clearStravaTokens();
+
+    expect(await get("strava")).toEqual({
+      clientId: "cid",
+      clientSecret: "secret",
+    });
+  });
+
+  it("clearStravaTokens is a no-op when nothing is stored", async () => {
+    await clearStravaTokens();
+    expect(await get("strava")).toBeUndefined();
   });
 });
