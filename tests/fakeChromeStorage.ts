@@ -9,11 +9,13 @@ export type FakeChrome = {
       interactive?: boolean;
     }) => Promise<string>;
   };
+  messages: unknown[];
   reset: () => void;
 };
 
 export function installFakeChromeStorage(initial: Bag = {}): FakeChrome {
   const bag: Bag = { ...initial };
+  const messages: unknown[] = [];
 
   const identity = {
     getRedirectURL: () => "https://test-extension.chromiumapp.org/",
@@ -50,6 +52,12 @@ export function installFakeChromeStorage(initial: Bag = {}): FakeChrome {
       },
     },
     identity,
+    runtime: {
+      async sendMessage(msg: unknown): Promise<undefined> {
+        messages.push(msg);
+        return undefined;
+      },
+    },
   };
 
   (globalThis as unknown as { chrome: unknown }).chrome = fake;
@@ -57,8 +65,10 @@ export function installFakeChromeStorage(initial: Bag = {}): FakeChrome {
   return {
     bag,
     identity,
+    messages,
     reset() {
       for (const k of Object.keys(bag)) delete bag[k];
+      messages.length = 0;
     },
   };
 }
