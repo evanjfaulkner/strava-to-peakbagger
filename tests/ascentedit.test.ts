@@ -158,6 +158,20 @@ describe("init — happy path pre-fill", () => {
     buildPeakbaggerForm();
   });
 
+  it("accepts a negative peakId (peakbagger uses these for some peaks)", async () => {
+    const NEG_PEAK_ID = -200643;
+    storage.bag["prefillPayloads"] = {
+      [`${STRAVA_ID}:${NEG_PEAK_ID}`]: { ...SAMPLE_PAYLOAD, pid: NEG_PEAK_ID },
+    };
+    setUrl(
+      `https://www.peakbagger.com/climber/ascentedit.aspx?pid=${NEG_PEAK_ID}&cid=42#s2p=${STRAVA_ID}`,
+    );
+
+    await init();
+
+    expect(inputByName("DateText").value).toBe("2026-04-15");
+  });
+
   it("fills every text/textarea field by name", async () => {
     await init();
 

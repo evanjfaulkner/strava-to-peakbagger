@@ -40,7 +40,9 @@ export async function init(): Promise<void> {
   const url = new URL(window.location.href);
   const pidStr = url.searchParams.get("pid");
   const pid = pidStr ? Number(pidStr) : NaN;
-  if (!Number.isFinite(pid) || pid <= 0) {
+  // Peakbagger uses negative peakIds for some unofficial / user-
+  // contributed peaks (e.g. pid=-200643). Accept any finite integer.
+  if (!Number.isFinite(pid)) {
     console.debug("[s2p] no pid in URL; content script no-op");
     return;
   }

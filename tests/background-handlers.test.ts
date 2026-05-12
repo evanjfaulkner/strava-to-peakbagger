@@ -379,6 +379,17 @@ describe("handleAscentSaved", () => {
     expect(res2.ok).toBe(false);
   });
 
+  it("accepts a negative peakId (peakbagger uses these for some peaks)", async () => {
+    const res = await handleAscentSaved({
+      stravaId: 18158745515,
+      peakId: -200643,
+      ascentId: 12345,
+    });
+    expect(res.ok).toBe(true);
+    const processed = storage.bag["processed"] as Record<string, unknown>;
+    expect(processed["18158745515:-200643"]).toBeDefined();
+  });
+
   it("preserves other processed entries on write", async () => {
     storage.bag["processed"] = {
       "999:888": { processedAt: 100, ascentId: 7 },

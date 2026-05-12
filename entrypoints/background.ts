@@ -178,7 +178,9 @@ export async function handleAscentSaved(msg: {
     if (!Number.isFinite(stravaId) || stravaId <= 0) {
       return { ok: false, error: "ascent-saved: invalid stravaId" };
     }
-    if (!Number.isFinite(peakId) || peakId <= 0) {
+    // Peakbagger uses negative peakIds for some user-contributed
+    // peaks (e.g. pid=-200643). Accept any finite integer.
+    if (!Number.isFinite(peakId)) {
       return { ok: false, error: "ascent-saved: invalid peakId" };
     }
     const ascentId =
