@@ -33,7 +33,8 @@ describe("generic get/set", () => {
       ["activities", []],
       ["peakTiles", { "37.7,-122.4": { peaks: [], fetchedAt: 1 } }],
       ["prefillPayloads", {}],
-      ["processed", { "1:2": { processedAt: 1 } }],
+      ["processed", { "1:2": { processedAt: 1, ascentId: 99 } }],
+      ["activityMatches", { 1: { peakIds: [2, 3], computedAt: 100 } }],
       ["log", []],
     ];
 

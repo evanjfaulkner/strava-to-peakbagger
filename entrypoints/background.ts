@@ -33,12 +33,43 @@ function errMessage(e: unknown): string {
 // Real handlers (popup-facing)
 // ============================================================
 
-export async function handleGetActivities(): Promise<
-  Resp<{ activities: ActivitySummary[] }>
-> {
+export type ActivityState = "unmatched" | "pending" | "done";
+export type EnrichedActivity = ActivitySummary & {
+  state: ActivityState;
+  matchedPeakIds?: number[];
+  processedPeakIds?: number[];
+};
+
+export async function handleGetActivities(
+  showHidden = false,
+): Promise<Resp<{ activities: EnrichedActivity[] }>> {
   try {
     const activities = (await get("activities")) ?? [];
-    return { ok: true, activities };
+    const activityMatches = (await get("activityMatches")) ?? {};
+    const processed = (await get("processed")) ?? {};
+
+    const enriched: EnrichedActivity[] = activities.map((a) => {
+      const matches = activityMatches[a.id];
+      if (!matches) {
+        return { ...a, state: "unmatched" };
+      }
+      const processedForThis = matches.peakIds.filter(
+        (pid) => processed[`${a.id}:${pid}`],
+      );
+      const state: ActivityState =
+        processedForThis.length === matches.peakIds.length ? "done" : "pending";
+      return {
+        ...a,
+        state,
+        matchedPeakIds: matches.peakIds,
+        processedPeakIds: processedForThis,
+      };
+    });
+
+    const filtered = showHidden
+      ? enriched
+      : enriched.filter((a) => a.state !== "done");
+    return { ok: true, activities: filtered };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
   }
@@ -61,7 +92,7 @@ export async function handleRefreshActivities(): Promise<
 
 export async function handleProcessActivity(
   stravaId: number,
-): Promise<Resp<{ openedCount: number }>> {
+): Promise<Resp<{ openedCount: number; totalMatches: number }>> {
   try {
     if (!Number.isFinite(stravaId) || stravaId <= 0) {
       return { ok: false, error: "Invalid stravaId" };
@@ -82,15 +113,38 @@ export async function handleProcessActivity(
       settings,
     );
 
-    if (matches.length === 0) {
-      return { ok: true, openedCount: 0 };
+    // Cache the match set FIRST so subsequent popup opens can filter
+    // this activity based on processed coverage even if the rest of
+    // this function fails partway through.
+    const allMatches = (await get("activityMatches")) ?? {};
+    allMatches[stravaId] = {
+      peakIds: matches.map((m) => m.peak.peakId),
+      computedAt: Date.now(),
+    };
+    await set("activityMatches", allMatches);
+
+    // Filter out matches whose (stravaId, peakId) pair has already
+    // been processed (saved on peakbagger OR explicitly hidden by
+    // the user). Re-clicking Open on a partially-saved activity
+    // should only open the remaining tabs.
+    const processed = (await get("processed")) ?? {};
+    const unprocessedMatches = matches.filter(
+      (m) => !processed[`${stravaId}:${m.peak.peakId}`],
+    );
+
+    if (unprocessedMatches.length === 0) {
+      return {
+        ok: true,
+        openedCount: 0,
+        totalMatches: matches.length,
+      };
     }
 
     // Build prefill payloads and merge with any existing.
     const current =
       (await get("prefillPayloads")) ?? ({} as Record<string, PrefillPayload>);
     const updated = { ...current };
-    for (const m of matches) {
+    for (const m of unprocessedMatches) {
       const key = `${stravaId}:${m.peak.peakId}`;
       updated[key] = buildPrefill(track, m, activity);
     }
@@ -98,12 +152,110 @@ export async function handleProcessActivity(
 
     // Open one tab per match, sequentially (so Chrome stages them
     // properly without overloading the tab strip).
-    for (const m of matches) {
+    for (const m of unprocessedMatches) {
       const url = `${PEAKBAGGER_ASCENT_URL}?pid=${m.peak.peakId}&cid=${cid}#s2p=${stravaId}`;
       await chrome.tabs.create({ url, active: false });
     }
 
-    return { ok: true, openedCount: matches.length };
+    return {
+      ok: true,
+      openedCount: unprocessedMatches.length,
+      totalMatches: matches.length,
+    };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+export async function handleAscentSaved(msg: {
+  stravaId?: unknown;
+  peakId?: unknown;
+  ascentId?: unknown;
+}): Promise<{ ok: true } | Err> {
+  try {
+    const stravaId = Number(msg.stravaId);
+    const peakId = Number(msg.peakId);
+    if (!Number.isFinite(stravaId) || stravaId <= 0) {
+      return { ok: false, error: "ascent-saved: invalid stravaId" };
+    }
+    if (!Number.isFinite(peakId) || peakId <= 0) {
+      return { ok: false, error: "ascent-saved: invalid peakId" };
+    }
+    const ascentId =
+      typeof msg.ascentId === "number" && Number.isFinite(msg.ascentId)
+        ? msg.ascentId
+        : null;
+
+    const processed = (await get("processed")) ?? {};
+    processed[`${stravaId}:${peakId}`] = {
+      processedAt: Date.now(),
+      ascentId,
+    };
+    await set("processed", processed);
+
+    console.log(
+      `[s2p] ascent-saved recorded: ${stravaId}:${peakId} ascentId=${ascentId ?? "<null>"}`,
+    );
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+export async function handleMarkActivityHidden(
+  stravaId: number,
+): Promise<Resp<{ hiddenCount: number }>> {
+  try {
+    if (!Number.isFinite(stravaId) || stravaId <= 0) {
+      return { ok: false, error: "Invalid stravaId" };
+    }
+    const activityMatches = (await get("activityMatches")) ?? {};
+    const entry = activityMatches[stravaId];
+    if (!entry) {
+      return {
+        ok: false,
+        error: "Activity has no cached matches — click Open first",
+      };
+    }
+    const processed = (await get("processed")) ?? {};
+    let hiddenCount = 0;
+    for (const peakId of entry.peakIds) {
+      const key = `${stravaId}:${peakId}`;
+      if (!processed[key]) {
+        processed[key] = { processedAt: Date.now(), ascentId: null };
+        hiddenCount++;
+      }
+    }
+    await set("processed", processed);
+    return { ok: true, hiddenCount };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+export async function handleMarkActivityUnhidden(
+  stravaId: number,
+): Promise<Resp<{ unhiddenCount: number }>> {
+  try {
+    if (!Number.isFinite(stravaId) || stravaId <= 0) {
+      return { ok: false, error: "Invalid stravaId" };
+    }
+    const activityMatches = (await get("activityMatches")) ?? {};
+    const entry = activityMatches[stravaId];
+    if (!entry) {
+      return { ok: true, unhiddenCount: 0 };
+    }
+    const processed = (await get("processed")) ?? {};
+    let unhiddenCount = 0;
+    for (const peakId of entry.peakIds) {
+      const key = `${stravaId}:${peakId}`;
+      if (processed[key]) {
+        delete processed[key];
+        unhiddenCount++;
+      }
+    }
+    await set("processed", processed);
+    return { ok: true, unhiddenCount };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
   }
@@ -144,8 +296,9 @@ export default defineBackground(() => {
 
     // Popup-facing handlers
     if (type === "getActivities") {
-      void handleGetActivities().then(sendResponse).catch((e: unknown) =>
-        sendResponse({ ok: false, error: errMessage(e) }),
+      const showHidden = Boolean(msg?.showHidden);
+      void handleGetActivities(showHidden).then(sendResponse).catch(
+        (e: unknown) => sendResponse({ ok: false, error: errMessage(e) }),
       );
       return true;
     }
@@ -162,12 +315,27 @@ export default defineBackground(() => {
       );
       return true;
     }
+    if (type === "markActivityHidden") {
+      const stravaId = Number(msg?.stravaId);
+      void handleMarkActivityHidden(stravaId).then(sendResponse).catch(
+        (e: unknown) => sendResponse({ ok: false, error: errMessage(e) }),
+      );
+      return true;
+    }
+    if (type === "markActivityUnhidden") {
+      const stravaId = Number(msg?.stravaId);
+      void handleMarkActivityUnhidden(stravaId).then(sendResponse).catch(
+        (e: unknown) => sendResponse({ ok: false, error: errMessage(e) }),
+      );
+      return true;
+    }
 
-    // Content-script-emitted signal (Step 9). For now, just log.
-    // Step 11 will make this update storage.processed.
+    // Content-script-emitted signal (Step 9). Updates storage.processed
+    // so the popup can filter out already-saved activities.
     if (type === "ascent-saved") {
-      console.log("[s2p] ascent saved", msg);
-      sendResponse({ ok: true });
+      void handleAscentSaved(msg).then(sendResponse).catch((e: unknown) =>
+        sendResponse({ ok: false, error: errMessage(e) }),
+      );
       return true;
     }
 

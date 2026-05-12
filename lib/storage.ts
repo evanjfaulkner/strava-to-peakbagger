@@ -43,7 +43,8 @@ export type Storage = {
   activities: ActivitySummary[];
   peakTiles: Record<string, { peaks: Peak[]; fetchedAt: number }>;
   prefillPayloads: Record<string, PrefillPayload>;
-  processed: Record<string, { processedAt: number }>;
+  processed: Record<string, { processedAt: number; ascentId: number | null }>;
+  activityMatches: Record<number, { peakIds: number[]; computedAt: number }>;
   log: LogEntry[];
 };
 

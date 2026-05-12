@@ -18,12 +18,18 @@ import { installFakeChromeStorage } from "./fakeChromeStorage";
 let handleGetActivities: typeof import("../entrypoints/background").handleGetActivities;
 let handleRefreshActivities: typeof import("../entrypoints/background").handleRefreshActivities;
 let handleProcessActivity: typeof import("../entrypoints/background").handleProcessActivity;
+let handleAscentSaved: typeof import("../entrypoints/background").handleAscentSaved;
+let handleMarkActivityHidden: typeof import("../entrypoints/background").handleMarkActivityHidden;
+let handleMarkActivityUnhidden: typeof import("../entrypoints/background").handleMarkActivityUnhidden;
 
 beforeAll(async () => {
   const mod = await import("../entrypoints/background");
   handleGetActivities = mod.handleGetActivities;
   handleRefreshActivities = mod.handleRefreshActivities;
   handleProcessActivity = mod.handleProcessActivity;
+  handleAscentSaved = mod.handleAscentSaved;
+  handleMarkActivityHidden = mod.handleMarkActivityHidden;
+  handleMarkActivityUnhidden = mod.handleMarkActivityUnhidden;
 });
 
 const FAR_FUTURE = 9_999_999_999;
@@ -79,10 +85,51 @@ describe("handleGetActivities", () => {
     expect(res).toEqual({ ok: true, activities: [] });
   });
 
-  it("returns cached activities", async () => {
+  it("returns cached activities tagged as unmatched when no match cache", async () => {
     storage.bag["activities"] = [FAKE_ACTIVITY];
     const res = await handleGetActivities();
-    expect(res).toEqual({ ok: true, activities: [FAKE_ACTIVITY] });
+    expect(res).toEqual({
+      ok: true,
+      activities: [{ ...FAKE_ACTIVITY, state: "unmatched" }],
+    });
+  });
+
+  it("filters out done activities by default", async () => {
+    const otherActivity = { ...FAKE_ACTIVITY, id: 222, name: "Pending Hike" };
+    storage.bag["activities"] = [FAKE_ACTIVITY, otherActivity];
+    storage.bag["activityMatches"] = {
+      [FAKE_ACTIVITY.id]: { peakIds: [1], computedAt: 0 },
+      [otherActivity.id]: { peakIds: [10, 11], computedAt: 0 },
+    };
+    storage.bag["processed"] = {
+      [`${FAKE_ACTIVITY.id}:1`]: { processedAt: 0, ascentId: 5 },
+      [`${otherActivity.id}:10`]: { processedAt: 0, ascentId: 6 },
+      // otherActivity:11 NOT processed → still pending
+    };
+
+    const res = await handleGetActivities();
+    if (!res.ok) throw new Error("expected ok");
+
+    const ids = res.activities.map((a) => a.id);
+    expect(ids).toEqual([222]); // only the pending one
+    expect(res.activities[0]?.state).toBe("pending");
+    expect(res.activities[0]?.processedPeakIds).toEqual([10]);
+    expect(res.activities[0]?.matchedPeakIds).toEqual([10, 11]);
+  });
+
+  it("with showHidden=true returns done activities too", async () => {
+    storage.bag["activities"] = [FAKE_ACTIVITY];
+    storage.bag["activityMatches"] = {
+      [FAKE_ACTIVITY.id]: { peakIds: [1], computedAt: 0 },
+    };
+    storage.bag["processed"] = {
+      [`${FAKE_ACTIVITY.id}:1`]: { processedAt: 0, ascentId: 5 },
+    };
+
+    const res = await handleGetActivities(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.activities).toHaveLength(1);
+    expect(res.activities[0]?.state).toBe("done");
   });
 });
 
@@ -187,10 +234,46 @@ describe("handleProcessActivity — pipeline", () => {
 
     const res = await handleProcessActivity(FAKE_ACTIVITY.id);
 
-    expect(res).toEqual({ ok: true, openedCount: 1 });
+    expect(res).toEqual({
+      ok: true,
+      openedCount: 1,
+      totalMatches: 1,
+    });
     expect(storage.tabsCreated).toHaveLength(1);
     const payloads = storage.bag["prefillPayloads"] as Record<string, unknown>;
     expect(Object.keys(payloads)).toEqual([`${FAKE_ACTIVITY.id}:${PEAK_ID}`]);
+  });
+
+  it("caches activityMatches with the matched peakIds", async () => {
+    mockPipeline();
+
+    await handleProcessActivity(FAKE_ACTIVITY.id);
+
+    const cache = storage.bag["activityMatches"] as Record<
+      number,
+      { peakIds: number[]; computedAt: number }
+    >;
+    expect(cache[FAKE_ACTIVITY.id]?.peakIds).toEqual([PEAK_ID]);
+    expect(cache[FAKE_ACTIVITY.id]?.computedAt).toBeGreaterThan(0);
+  });
+
+  it("skips peaks that are already in processed", async () => {
+    storage.bag["processed"] = {
+      [`${FAKE_ACTIVITY.id}:${PEAK_ID}`]: {
+        processedAt: Date.now() - 1000,
+        ascentId: 7,
+      },
+    };
+    mockPipeline();
+
+    const res = await handleProcessActivity(FAKE_ACTIVITY.id);
+
+    expect(res).toEqual({
+      ok: true,
+      openedCount: 0,
+      totalMatches: 1,
+    });
+    expect(storage.tabsCreated).toEqual([]);
   });
 
   it("tab URL matches the documented shape with cid and #s2p hash", async () => {
@@ -236,7 +319,7 @@ describe("handleProcessActivity — pipeline", () => {
 
     const res = await handleProcessActivity(FAKE_ACTIVITY.id);
 
-    expect(res).toEqual({ ok: true, openedCount: 0 });
+    expect(res).toEqual({ ok: true, openedCount: 0, totalMatches: 0 });
     expect(storage.tabsCreated).toEqual([]);
     expect(storage.bag["prefillPayloads"]).toBeUndefined();
   });
@@ -253,5 +336,115 @@ describe("handleProcessActivity — pipeline", () => {
     expect(Object.keys(payloads).sort()).toEqual(
       ["111:222", `${FAKE_ACTIVITY.id}:${PEAK_ID}`].sort(),
     );
+  });
+});
+
+describe("handleAscentSaved", () => {
+  it("writes processed[<stravaId>:<peakId>] with the ascentId", async () => {
+    const res = await handleAscentSaved({
+      stravaId: 123,
+      peakId: 42,
+      ascentId: 99,
+    });
+
+    expect(res).toEqual({ ok: true });
+    const processed = storage.bag["processed"] as Record<
+      string,
+      { processedAt: number; ascentId: number | null }
+    >;
+    expect(processed["123:42"]?.ascentId).toBe(99);
+    expect(processed["123:42"]?.processedAt).toBeGreaterThan(0);
+  });
+
+  it("accepts a null ascentId from the content script", async () => {
+    const res = await handleAscentSaved({
+      stravaId: 123,
+      peakId: 42,
+      ascentId: null,
+    });
+
+    expect(res).toEqual({ ok: true });
+    const processed = storage.bag["processed"] as Record<
+      string,
+      { processedAt: number; ascentId: number | null }
+    >;
+    expect(processed["123:42"]?.ascentId).toBeNull();
+  });
+
+  it("rejects invalid stravaId or peakId", async () => {
+    const res1 = await handleAscentSaved({ peakId: 1 });
+    expect(res1.ok).toBe(false);
+
+    const res2 = await handleAscentSaved({ stravaId: 1 });
+    expect(res2.ok).toBe(false);
+  });
+
+  it("preserves other processed entries on write", async () => {
+    storage.bag["processed"] = {
+      "999:888": { processedAt: 100, ascentId: 7 },
+    };
+
+    await handleAscentSaved({ stravaId: 123, peakId: 42, ascentId: 99 });
+
+    const processed = storage.bag["processed"] as Record<string, unknown>;
+    expect(Object.keys(processed).sort()).toEqual(["123:42", "999:888"]);
+  });
+});
+
+describe("handleMarkActivityHidden", () => {
+  it("adds null-ascentId entries for all peakIds not yet processed", async () => {
+    storage.bag["activityMatches"] = {
+      777: { peakIds: [1, 2, 3], computedAt: 0 },
+    };
+    storage.bag["processed"] = {
+      "777:1": { processedAt: 100, ascentId: 99 },
+    };
+
+    const res = await handleMarkActivityHidden(777);
+
+    expect(res).toEqual({ ok: true, hiddenCount: 2 });
+    const processed = storage.bag["processed"] as Record<
+      string,
+      { processedAt: number; ascentId: number | null }
+    >;
+    expect(processed["777:1"]?.ascentId).toBe(99); // unchanged
+    expect(processed["777:2"]?.ascentId).toBeNull();
+    expect(processed["777:3"]?.ascentId).toBeNull();
+  });
+
+  it("returns ok:false when no activityMatches entry exists", async () => {
+    const res = await handleMarkActivityHidden(999);
+    expect(res.ok).toBe(false);
+    expect((res as { error: string }).error).toMatch(/click Open first/);
+  });
+});
+
+describe("handleMarkActivityUnhidden", () => {
+  it("removes all peakId entries for the activity", async () => {
+    storage.bag["activityMatches"] = {
+      777: { peakIds: [1, 2, 3], computedAt: 0 },
+    };
+    storage.bag["processed"] = {
+      "777:1": { processedAt: 100, ascentId: 99 },
+      "777:2": { processedAt: 200, ascentId: null },
+      "777:3": { processedAt: 300, ascentId: 42 },
+      "888:1": { processedAt: 400, ascentId: 7 },
+    };
+
+    const res = await handleMarkActivityUnhidden(777);
+
+    expect(res).toEqual({ ok: true, unhiddenCount: 3 });
+    const processed = storage.bag["processed"] as Record<string, unknown>;
+    expect(Object.keys(processed)).toEqual(["888:1"]);
+  });
+
+  it("is a no-op when no activityMatches entry exists", async () => {
+    storage.bag["processed"] = {
+      "777:1": { processedAt: 100, ascentId: 99 },
+    };
+    const res = await handleMarkActivityUnhidden(999);
+    expect(res).toEqual({ ok: true, unhiddenCount: 0 });
+    const processed = storage.bag["processed"] as Record<string, unknown>;
+    expect(Object.keys(processed)).toEqual(["777:1"]); // untouched
   });
 });
