@@ -1,5 +1,6 @@
-import { DEFAULT_MATCH_THRESHOLDS } from "../lib/matcher";
+import { DEFAULT_MATCH_THRESHOLDS, matchSummits } from "../lib/matcher";
 import { peaksForTrack } from "../lib/peakbagger";
+import { get } from "../lib/storage";
 import { fetchActivitiesSince, fetchStreams } from "../lib/strava";
 
 const DEV_LIST_WINDOW_MS = 7 * 24 * 3600 * 1000;
@@ -49,6 +50,27 @@ export default defineBackground(() => {
         );
       return true;
     }
+    if (msg?.type === "dev:match") {
+      const activityId = Number(msg?.activityId);
+      if (!Number.isFinite(activityId)) {
+        sendResponse({
+          ok: false,
+          error: "dev:match requires { activityId: number }",
+        } satisfies DevResponse);
+        return true;
+      }
+      void handleDevMatch(activityId)
+        .then((count) =>
+          sendResponse({ ok: true, count } satisfies DevResponse),
+        )
+        .catch((err: unknown) =>
+          sendResponse({
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          } satisfies DevResponse),
+        );
+      return true;
+    }
     return false;
   });
 
@@ -63,11 +85,13 @@ export default defineBackground(() => {
       s2p: {
         devList: () => Promise<number>;
         devPeaks: (activityId: number) => Promise<number>;
+        devMatch: (activityId: number) => Promise<number>;
       };
     }
   ).s2p = {
     devList: handleDevList,
     devPeaks: handleDevPeaks,
+    devMatch: handleDevMatch,
   };
 });
 
@@ -87,6 +111,39 @@ async function handleDevList(): Promise<number> {
     return list.length;
   } catch (err) {
     console.error("[s2p] dev:list failed:", err);
+    throw err;
+  }
+}
+
+async function handleDevMatch(activityId: number): Promise<number> {
+  try {
+    const cached = (await get("activities")) ?? [];
+    const summary = cached.find((a) => a.id === activityId);
+    if (!summary) {
+      throw new Error(
+        `activity ${activityId} not in storage.activities cache — run s2p.devList() first`,
+      );
+    }
+    const track = await fetchStreams(activityId);
+    const peaks = await peaksForTrack(track, DEFAULT_MATCH_THRESHOLDS.horizM);
+    const activityStart = new Date(summary.start);
+    const matches = matchSummits(
+      track,
+      peaks,
+      DEFAULT_MATCH_THRESHOLDS,
+      activityStart,
+    );
+    console.log(
+      `[s2p] activity ${activityId}: ${peaks.length} candidate peaks → ${matches.length} matched summits (horizM=${DEFAULT_MATCH_THRESHOLDS.horizM}m, vertM=${DEFAULT_MATCH_THRESHOLDS.vertM}m)`,
+    );
+    for (const m of matches) {
+      console.log(
+        `  ${m.summitTimeUtc.slice(11, 16)}  ${m.horizM.toFixed(1).padStart(5)}m  #${String(m.peak.peakId).padEnd(7)} ${m.peak.name}`,
+      );
+    }
+    return matches.length;
+  } catch (err) {
+    console.error(`[s2p] dev:match failed for activity ${activityId}:`, err);
     throw err;
   }
 }
