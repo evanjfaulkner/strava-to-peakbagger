@@ -11,6 +11,7 @@ export default defineBackground(() => {
 
   // Top-level listener registration is the canonical MV3 pattern —
   // Chrome will rehydrate listeners synchronously when the SW wakes.
+  // Called from popup/options/content-script contexts.
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type === "dev:list") {
       void handleDevList()
@@ -28,6 +29,16 @@ export default defineBackground(() => {
     }
     return false;
   });
+
+  // Expose dev hooks directly on the SW global so we can invoke them
+  // from the service-worker DevTools console without going through
+  // chrome.runtime.sendMessage (which can't deliver to its own sender
+  // context). Usage in the SW DevTools console:
+  //   await s2p.devList()
+  (globalThis as unknown as { s2p: { devList: () => Promise<number> } }).s2p =
+    {
+      devList: handleDevList,
+    };
 });
 
 async function handleDevList(): Promise<number> {
