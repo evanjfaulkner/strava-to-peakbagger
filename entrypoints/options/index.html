@@ -9,7 +9,94 @@
   <body>
     <main>
       <h1>Options</h1>
-      <p>Strava credentials and threshold knobs will live here.</p>
+
+      <form id="options-form" novalidate>
+        <section>
+          <h2>Strava</h2>
+          <p class="hint">
+            Create a personal Strava API app at
+            <a
+              href="https://www.strava.com/settings/api"
+              target="_blank"
+              rel="noopener"
+              >strava.com/settings/api</a
+            >
+            and paste the values below. Set the app's "Authorization
+            Callback Domain" to
+            <code>chromiumapp.org</code>. Credentials are stored locally in
+            <code>chrome.storage.local</code> and never leave this browser.
+          </p>
+
+          <label>
+            <span>Client ID</span>
+            <input id="clientId" name="clientId" type="text" autocomplete="off" />
+          </label>
+
+          <label>
+            <span>Client secret</span>
+            <input
+              id="clientSecret"
+              name="clientSecret"
+              type="password"
+              autocomplete="off"
+            />
+          </label>
+        </section>
+
+        <section>
+          <h2>Matching</h2>
+
+          <label>
+            <span>Horizontal match threshold (m)</span>
+            <input
+              id="horizM"
+              name="horizM"
+              type="number"
+              min="1"
+              max="500"
+              step="1"
+            />
+          </label>
+
+          <label>
+            <span>Vertical match threshold (m)</span>
+            <input
+              id="vertM"
+              name="vertM"
+              type="number"
+              min="1"
+              max="500"
+              step="1"
+            />
+          </label>
+
+          <label>
+            <span>Initial lookback (days)</span>
+            <input
+              id="lookbackDays"
+              name="lookbackDays"
+              type="number"
+              min="1"
+              max="3650"
+              step="1"
+            />
+          </label>
+        </section>
+
+        <section>
+          <h2>Activity-type blacklist</h2>
+          <p class="hint">One Strava sport type per line. Blacklisted activities are skipped before fetching streams.</p>
+          <label>
+            <span class="sr-only">Blacklist</span>
+            <textarea id="blacklist" name="blacklist" rows="8"></textarea>
+          </label>
+        </section>
+
+        <div class="actions">
+          <button type="submit">Save</button>
+          <p id="status" role="status" aria-live="polite"></p>
+        </div>
+      </form>
     </main>
     <script type="module" src="./main.ts"></script>
   </body>
