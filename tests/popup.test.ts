@@ -25,8 +25,10 @@ const PAGE_HTML = `
   </header>
   <p id="cid-warning" class="warning" role="status" hidden>warning</p>
   <p id="status" role="status"></p>
+  <p id="match-progress" role="status"></p>
   <ul id="activity-list"></ul>
   <p id="empty-state" class="empty" hidden>empty</p>
+  <button id="load-more-btn" type="button" hidden>Load more</button>
 `;
 
 function makeActivity(
@@ -62,6 +64,13 @@ let sendMessage: Mock;
 
 beforeEach(() => {
   storage = installFakeChromeStorage();
+  // Seed today's matchSession so the v0.2 auto-trigger doesn't fire
+  // for existing tests (each explicit auto-trigger test clears this).
+  const today = new Date().toLocaleDateString("sv-SE");
+  storage.bag["matchSession"] = {
+    lastAutoRefreshDay: today,
+    lastBatchEndIndex: 0,
+  };
   sendMessage = vi.fn();
   // Override the fake's sendMessage so each test controls responses.
   (globalThis as unknown as { chrome: { runtime: { sendMessage: Mock } } }).chrome.runtime.sendMessage =
@@ -484,5 +493,193 @@ describe("popup — idempotency UI", () => {
     const hh = String(tomorrow.getHours()).padStart(2, "0");
     const mm = String(tomorrow.getMinutes()).padStart(2, "0");
     expect(status).toContain(`${hh}:${mm}`);
+  });
+});
+
+describe("popup — v0.2 streaming + auto-trigger", () => {
+  // Helper: capture the chrome.runtime.onMessage listener so tests
+  // can fire matchBatch:item / :done events at the popup.
+  let onMessageCb: ((msg: unknown) => void) | null = null;
+
+  beforeEach(() => {
+    onMessageCb = null;
+    (globalThis as unknown as {
+      chrome: {
+        runtime: { onMessage: { addListener: (cb: typeof onMessageCb) => void } };
+      };
+    }).chrome.runtime.onMessage = {
+      addListener: (cb) => {
+        onMessageCb = cb;
+      },
+    };
+  });
+
+  function fireBatchEvent(msg: unknown): void {
+    if (onMessageCb) onMessageCb(msg);
+  }
+
+  it("auto-trigger fires when matchSession.lastAutoRefreshDay is not today", async () => {
+    // Replace the today-seed with yesterday.
+    storage.bag["matchSession"] = {
+      lastAutoRefreshDay: "1999-01-01",
+      lastBatchEndIndex: 0,
+    };
+    sendMessage
+      .mockResolvedValueOnce({ ok: true, activities: [] }) // initial getActivities
+      .mockResolvedValueOnce({ ok: true, count: 3 }) // refreshActivities
+      .mockResolvedValueOnce({ ok: true, sessionId: "x", totalScanned: 0, totalMatches: 0, endIndex: 0, reason: "exhausted" }); // matchBatch
+
+    await init();
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    const types = sendMessage.mock.calls.map(
+      (c: unknown[]) => (c[0] as { type: string }).type,
+    );
+    expect(types).toContain("refreshActivities");
+    expect(types).toContain("matchBatch");
+  });
+
+  it("auto-trigger does NOT fire when lastAutoRefreshDay is today", async () => {
+    // beforeEach already seeded today.
+    sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
+
+    await init();
+    await flushAsync();
+
+    // Only the initial getActivities call should have fired.
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0]![0]).toEqual({
+      type: "getActivities",
+      showHidden: false,
+    });
+  });
+
+  it('matchBatch:item with addedPendingRow=true updates the cumulative counter and re-renders', async () => {
+    sendMessage
+      .mockResolvedValueOnce({ ok: true, activities: [] }) // init render
+      .mockResolvedValueOnce({
+        ok: true,
+        activities: [
+          makeActivity(42, "2026-05-13T10:00:00Z", "Hike", "T", {
+            state: "pending",
+            matchedPeakIds: [1],
+            processedPeakIds: [],
+          }),
+        ],
+      }); // re-render after the event
+
+    await init();
+    await flushAsync();
+
+    fireBatchEvent({
+      type: "matchBatch:item",
+      sessionId: "x",
+      stravaId: 42,
+      peakCount: 1,
+      addedPendingRow: true,
+      totalScanned: 1,
+    });
+    await flushAsync();
+    await flushAsync();
+
+    const progress = document.getElementById("match-progress")?.textContent ?? "";
+    expect(progress).toContain("Scanned 1");
+    expect(progress).toContain("Found 1 match");
+    // Activity row appears via re-render.
+    expect(document.querySelectorAll(".activity")).toHaveLength(1);
+  });
+
+  it('matchBatch:item with addedPendingRow=false increments counters but no re-render', async () => {
+    sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
+    await init();
+    await flushAsync();
+    sendMessage.mockReset();
+
+    fireBatchEvent({
+      type: "matchBatch:item",
+      sessionId: "x",
+      stravaId: 42,
+      peakCount: 0,
+      addedPendingRow: false,
+      totalScanned: 1,
+    });
+    await flushAsync();
+
+    // No additional getActivities re-fetch should have fired.
+    expect(sendMessage).not.toHaveBeenCalled();
+    const progress = document.getElementById("match-progress")?.textContent ?? "";
+    expect(progress).toContain("Scanned 1");
+    expect(progress).toContain("Found 0 matches");
+  });
+
+  it('matchBatch:done with reason=exhausted disables Load more with "No more activities"', async () => {
+    sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
+    await init();
+    await flushAsync();
+
+    fireBatchEvent({
+      type: "matchBatch:done",
+      sessionId: "x",
+      totalScanned: 5,
+      totalMatches: 0,
+      endIndex: 5,
+      reason: "exhausted",
+    });
+    await flushAsync();
+    await flushAsync();
+
+    const btn = document.getElementById("load-more-btn") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent).toContain("No more activities");
+    expect(btn.hidden).toBe(false);
+  });
+
+  it('matchBatch:done with reason=rate-limited shows cooldown text', async () => {
+    storage.sessionBag["stravaNextRetryAt"] = Date.now() + 60 * 60 * 1000;
+    sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
+    await init();
+    await flushAsync();
+
+    fireBatchEvent({
+      type: "matchBatch:done",
+      sessionId: "x",
+      totalScanned: 3,
+      totalMatches: 1,
+      endIndex: 3,
+      reason: "rate-limited",
+    });
+    await flushAsync();
+    await flushAsync();
+
+    const btn = document.getElementById("load-more-btn") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent).toMatch(/Rate limited.*\d{2}:\d{2}/);
+  });
+
+  it("Load more click sends matchBatch with the saved cursor", async () => {
+    storage.bag["matchSession"] = {
+      lastAutoRefreshDay: new Date().toLocaleDateString("sv-SE"),
+      lastBatchEndIndex: 47,
+    };
+    sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
+    await init();
+    await flushAsync();
+    sendMessage.mockReset();
+    sendMessage.mockResolvedValueOnce({ ok: true });
+
+    const btn = document.getElementById("load-more-btn") as HTMLButtonElement;
+    btn.hidden = false;
+    btn.click();
+    await flushAsync();
+    await flushAsync();
+
+    expect(sendMessage.mock.calls[0]![0]).toMatchObject({
+      type: "matchBatch",
+      startIndex: 47,
+      size: 20,
+      autoContinue: true,
+    });
   });
 });

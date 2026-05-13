@@ -85,6 +85,11 @@ export function installFakeChromeStorage(initial: Bag = {}): FakeChrome {
         messages.push(msg);
         return undefined;
       },
+      onMessage: {
+        addListener: (_cb: (msg: unknown) => void) => {
+          /* no-op stub for tests */
+        },
+      },
     },
     tabs: {
       async create(options: { url: string; active?: boolean }) {

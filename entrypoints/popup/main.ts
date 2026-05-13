@@ -1,7 +1,16 @@
-import { getClimberId } from "../../lib/storage";
+import {
+  getClimberId,
+  getMatchSession,
+  setMatchSession,
+} from "../../lib/storage";
 import type { ActivitySummary } from "../../lib/models";
 
-type ActivityState = "unmatched" | "pending" | "done" | "hidden";
+type ActivityState =
+  | "unmatched"
+  | "no-match"
+  | "pending"
+  | "done"
+  | "hidden";
 type EnrichedActivity = ActivitySummary & {
   state: ActivityState;
   matchedPeakIds?: number[];
@@ -27,8 +36,14 @@ type Response =
       totalMatches?: number;
       hiddenCount?: number;
       unhiddenCount?: number;
+      sessionId?: string;
+      totalScanned?: number;
+      endIndex?: number;
+      reason?: "found-pending" | "rate-limited" | "exhausted" | "manual-stop";
     }
   | { ok: false; error: string };
+
+const BATCH_SIZE = 20;
 
 async function send(message: unknown): Promise<Response> {
   return chrome.runtime.sendMessage(message) as Promise<Response>;
@@ -36,10 +51,46 @@ async function send(message: unknown): Promise<Response> {
 
 let showHidden = false;
 
+// Per-popup-session cumulative counters. Reset on each init().
+let sessionScanned = 0;
+let sessionMatches = 0;
+let batchInFlight = false;
+let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
+
+function todayLocalISO(): string {
+  return new Date().toLocaleDateString("sv-SE"); // "YYYY-MM-DD"
+}
+
+function setProgress(text: string): void {
+  const node = document.getElementById("match-progress");
+  if (node) node.textContent = text;
+}
+
+function updateProgressDisplay(): void {
+  if (sessionScanned === 0 && sessionMatches === 0) {
+    setProgress("");
+    return;
+  }
+  setProgress(
+    `Scanned ${sessionScanned} activit${sessionScanned === 1 ? "y" : "ies"} · Found ${sessionMatches} match${sessionMatches === 1 ? "" : "es"}`,
+  );
+}
+
 export async function init(): Promise<void> {
+  // Reset per-session state.
+  sessionScanned = 0;
+  sessionMatches = 0;
+  showHidden = false;
+  batchInFlight = false;
+  if (cooldownTimer !== null) {
+    clearTimeout(cooldownTimer);
+    cooldownTimer = null;
+  }
+
   const cid = await getClimberId();
   el<HTMLElement>("cid-warning").hidden = cid !== undefined;
 
+  // Show cached state immediately so the popup never looks blank.
   await renderActivities();
 
   el<HTMLButtonElement>("refresh-btn").addEventListener("click", () => {
@@ -57,6 +108,161 @@ export async function init(): Promise<void> {
       void handleHideAll();
     });
   }
+
+  const loadMoreBtn = document.getElementById("load-more-btn");
+  if (loadMoreBtn instanceof HTMLButtonElement) {
+    loadMoreBtn.addEventListener("click", () => {
+      void handleLoadMore();
+    });
+  }
+
+  // Listen for the SW's streaming batch events.
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (!msg || typeof msg !== "object") return;
+    const m = msg as { type?: string };
+    if (m.type === "matchBatch:item") void handleBatchItem(msg);
+    else if (m.type === "matchBatch:done") void handleBatchDone(msg);
+  });
+
+  // Auto-trigger refresh + first batch on first popup open of the
+  // local day. Fires in the background; init() returns immediately.
+  void maybeAutoTrigger();
+}
+
+async function maybeAutoTrigger(): Promise<void> {
+  const today = todayLocalISO();
+  const session = await getMatchSession();
+  if (session?.lastAutoRefreshDay === today) return;
+
+  batchInFlight = true;
+  updateLoadMoreButton({ disabled: true, text: "Loading…" });
+
+  try {
+    const refreshRes = await send({ type: "refreshActivities" });
+    if (!refreshRes.ok) {
+      setStatus(`Refresh failed: ${friendlyError(refreshRes.error)}`);
+      return;
+    }
+    await setMatchSession({
+      lastAutoRefreshDay: today,
+      lastBatchEndIndex: 0,
+    });
+    await renderActivities();
+    // Fire-and-forget; results stream in via matchBatch:item events.
+    await send({
+      type: "matchBatch",
+      startIndex: 0,
+      size: BATCH_SIZE,
+      autoContinue: true,
+    });
+  } finally {
+    batchInFlight = false;
+  }
+}
+
+async function handleBatchItem(msg: unknown): Promise<void> {
+  const m = msg as {
+    peakCount?: number;
+    addedPendingRow?: boolean;
+    totalScanned?: number;
+  };
+  sessionScanned += 1;
+  if ((m.peakCount ?? 0) > 0) sessionMatches += 1;
+  updateProgressDisplay();
+  if (m.addedPendingRow) {
+    // Cheap to refetch — popup activity list is small.
+    await renderActivities();
+  }
+}
+
+async function handleBatchDone(msg: unknown): Promise<void> {
+  batchInFlight = false;
+  const m = msg as {
+    endIndex?: number;
+    reason?: "found-pending" | "rate-limited" | "exhausted" | "manual-stop";
+  };
+  if (typeof m.endIndex === "number") {
+    const session = await getMatchSession();
+    await setMatchSession({
+      lastAutoRefreshDay: session?.lastAutoRefreshDay ?? todayLocalISO(),
+      lastBatchEndIndex: m.endIndex,
+    });
+  }
+  // Final state for Load more button.
+  if (m.reason === "exhausted") {
+    updateLoadMoreButton({
+      disabled: true,
+      text: "No more activities",
+      visible: true,
+    });
+  } else if (m.reason === "rate-limited") {
+    const ts = (await getStravaNextRetryAt()) ?? Date.now() + 60_000;
+    updateLoadMoreButton({
+      disabled: true,
+      text: `Rate limited — try again at ${fmtHHMM(ts)}`,
+      visible: true,
+    });
+    scheduleCooldownRecheck(ts);
+  } else {
+    updateLoadMoreButton({ disabled: false, text: "Load more", visible: true });
+  }
+}
+
+async function handleLoadMore(): Promise<void> {
+  if (batchInFlight) return;
+  batchInFlight = true;
+  updateLoadMoreButton({ disabled: true, text: "Loading…" });
+  try {
+    const session = await getMatchSession();
+    await send({
+      type: "matchBatch",
+      startIndex: session?.lastBatchEndIndex ?? 0,
+      size: BATCH_SIZE,
+      autoContinue: true,
+    });
+  } finally {
+    // batchInFlight is cleared by handleBatchDone.
+  }
+}
+
+function updateLoadMoreButton(opts: {
+  disabled: boolean;
+  text: string;
+  visible?: boolean;
+}): void {
+  const btn = document.getElementById("load-more-btn");
+  if (!(btn instanceof HTMLButtonElement)) return;
+  btn.disabled = opts.disabled;
+  btn.textContent = opts.text;
+  if (opts.visible !== undefined) btn.hidden = !opts.visible;
+}
+
+async function getStravaNextRetryAt(): Promise<number | null> {
+  try {
+    const stored = await chrome.storage.session.get("stravaNextRetryAt");
+    const v = (stored as Record<string, unknown>)["stravaNextRetryAt"];
+    return typeof v === "number" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function fmtHHMM(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function scheduleCooldownRecheck(ts: number): void {
+  if (cooldownTimer !== null) clearTimeout(cooldownTimer);
+  const delay = Math.max(1000, ts - Date.now() + 5000);
+  cooldownTimer = setTimeout(() => {
+    cooldownTimer = null;
+    updateLoadMoreButton({
+      disabled: false,
+      text: "Load more",
+      visible: true,
+    });
+  }, delay);
 }
 
 async function renderActivities(): Promise<void> {
