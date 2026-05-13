@@ -4,10 +4,12 @@ import {
   clearStravaTokens,
   get,
   getClimberId,
+  getMatchSession,
   getSettings,
   getStravaCreds,
   set,
   setClimberId,
+  setMatchSession,
   setSettings,
   setStravaCreds,
   setStravaTokens,
@@ -36,6 +38,7 @@ describe("generic get/set", () => {
       ["processed", { "1:2": { processedAt: 1, ascentId: 99 } }],
       ["activityMatches", { 1: { peakIds: [2, 3], computedAt: 100 } }],
       ["hiddenActivities", { 42: { hiddenAt: 1000 } }],
+      ["matchSession", { lastAutoRefreshDay: "2026-05-13", lastBatchEndIndex: 42 }],
       ["log", []],
     ];
 
@@ -157,6 +160,23 @@ describe("strava tokens", () => {
   it("clearStravaTokens is a no-op when nothing is stored", async () => {
     await clearStravaTokens();
     expect(await get("strava")).toBeUndefined();
+  });
+});
+
+describe("matchSession", () => {
+  it("returns undefined when nothing is stored", async () => {
+    expect(await getMatchSession()).toBeUndefined();
+  });
+
+  it("round-trips through setMatchSession", async () => {
+    await setMatchSession({
+      lastAutoRefreshDay: "2026-05-13",
+      lastBatchEndIndex: 42,
+    });
+    expect(await getMatchSession()).toEqual({
+      lastAutoRefreshDay: "2026-05-13",
+      lastBatchEndIndex: 42,
+    });
   });
 });
 

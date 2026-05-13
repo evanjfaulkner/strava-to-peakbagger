@@ -5,6 +5,11 @@ import type {
   PrefillPayload,
 } from "./models";
 
+export type MatchSession = {
+  lastAutoRefreshDay: string; // YYYY-MM-DD in user local TZ
+  lastBatchEndIndex: number; // cursor into activities[]
+};
+
 export type Strava = {
   clientId: string;
   clientSecret: string;
@@ -44,7 +49,15 @@ export type Storage = {
   peakTiles: Record<string, { peaks: Peak[]; fetchedAt: number }>;
   prefillPayloads: Record<string, PrefillPayload>;
   processed: Record<string, { processedAt: number; ascentId: number | null }>;
+  /**
+   * Cached match results per activity. Written by the batch worker
+   * for every attempted activity, including non-matches.
+   * - peakIds.length > 0   → matched at least one peak
+   * - peakIds.length === 0 → tried, found nothing (state "no-match")
+   * - absent entry         → not yet attempted (state "unmatched")
+   */
   activityMatches: Record<number, { peakIds: number[]; computedAt: number }>;
+  matchSession: MatchSession;
   // Stores user-dismissed activities keyed by stravaId. Lets Hide
   // work on activities the user has never clicked Open on (no
   // activityMatches entry). For activities WITH matches, Hide ALSO
@@ -119,6 +132,14 @@ export async function setStravaTokens(tokens: StravaTokens): Promise<void> {
 export async function getClimberId(): Promise<number | undefined> {
   const pb = await get("pb");
   return pb?.climberId;
+}
+
+export async function getMatchSession(): Promise<MatchSession | undefined> {
+  return await get("matchSession");
+}
+
+export async function setMatchSession(session: MatchSession): Promise<void> {
+  await set("matchSession", session);
 }
 
 export async function setClimberId(id: number | undefined): Promise<void> {
