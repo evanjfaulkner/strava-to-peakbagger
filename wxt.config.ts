@@ -4,7 +4,7 @@ export default defineConfig({
   manifest: {
     name: "Strava → Peakbagger",
     description: "Sync Strava activities to peakbagger.com ascents",
-    version: "0.1.1",
+    version: "0.2.0",
     permissions: ["identity", "storage", "tabs", "alarms", "scripting"],
     host_permissions: [
       "https://www.strava.com/*",

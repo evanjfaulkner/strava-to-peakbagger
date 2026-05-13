@@ -1,13 +1,13 @@
 # strava-to-peakbagger
 
-A Chrome extension that pre-fills [peakbagger.com](https://peakbagger.com) Add-Ascent forms using your [Strava](https://strava.com) activities. Click an activity in the popup, get one pre-filled peakbagger tab per peak you summited, click Save in each.
+A Chrome extension that pre-fills [peakbagger.com](https://peakbagger.com) Add-Ascent forms using your [Strava](https://strava.com) activities. Open the popup, see your activities that summited a peak, click Log ascents on the one you want — get one pre-filled peakbagger tab per peak, click Save in each.
 
-**v0.1.0 · experimental · personal use only** — see [Limitations](#limitations-and-design-choices) for why.
+**v0.2.0 · experimental · personal use only** — see [Limitations](#limitations-and-design-choices) for why.
 
 ## What it does
 
 - Fetches your Strava activities (uses your own Strava API app — you create it during setup).
-- For each activity you click, finds nearby peakbagger.com peaks whose coordinates fall within a configurable horizontal distance of your GPS track.
+- Eagerly matches recent activities in the background against peakbagger.com peaks within a configurable horizontal distance of your GPS track. Activities that didn't summit anything are silently filtered out.
 - Opens one peakbagger Add-Ascent tab per match, with date, time, gain, distance, duration, and a link back to the Strava activity all pre-filled.
 - You review and click Save in each tab. The extension tracks which `(activity, peak)` pairs you've saved so they don't reappear next time.
 
@@ -59,11 +59,14 @@ Three pieces of one-time setup, all done from the extension's Options page (clic
 
 ## How to use
 
-1. Click the extension icon. A popup opens with a list of recent activities (or empty on first run).
-2. Click **Refresh** to pull the last 90 days from Strava.
-3. Click **Open** next to an outdoor activity. The extension fetches its GPS track, finds nearby peaks, and opens one tab per matched peak — all in the background.
+1. Click the extension icon. On first install (or first open of a new day), the popup auto-refreshes from Strava and starts matching your recent activities in the background. You'll see `Scanned N · Found M matches` tick up as it works, and matched activities appear in the list as soon as they're found.
+2. The popup only shows activities that summited at least one peak — Yoga / flat city runs / non-summit rides are silently filtered out.
+3. Click **Log ascents** on the activity you want to log. The extension opens one tab per matched peak, with date / time / gain / distance / duration / Strava link all pre-filled.
 4. Switch to each opened tab. Verify the pre-filled fields, then click **Save Ascent** on the peakbagger form.
-5. After saving, the activity drops out of the popup's default view. Re-opening the popup, partially-saved activities show an `M/N saved` badge.
+5. After saving, the activity drops out of the popup's default view. Partially-saved activities show an `M/N saved` badge.
+6. Click **Load more** at the bottom of the list to scan the next 20 unmatched activities. If you hit Strava's rate limit, the button text will tell you when to try again.
+
+Subsequent popup opens on the same day are instant — they read cached results. Each new day, the auto-trigger fires once when you first open the popup.
 
 Per-row affordances:
 
@@ -77,7 +80,7 @@ All on the Options page.
 
 - **Horizontal match threshold** (`horizM`, default **75 m**) — how close a track point must come to a peak's coordinates to count as a summit. Tune lower if you get false positives, higher if real summits are being missed. Ski GPS tends to be noisier than hiking; 75 m handles both well in practice.
 - **Vertical match threshold** (`vertM`, default 25 m) — currently dormant, since peakbagger's bbox API doesn't return peak elevations. Reserved for a future enhancement.
-- **Initial lookback (days)** (`lookbackDays`, default 90) — how far back to fetch Strava activities on Refresh.
+- **Initial lookback (days)** (`lookbackDays`, default 90) — how far back to fetch Strava activities on each Refresh (manual click or daily auto-trigger).
 - **Activity-type blacklist** — Strava sport types skipped before fetching streams. Defaults to indoor activities (Yoga, WeightTraining, VirtualRide, etc.). One per line.
 
 ## Troubleshooting
@@ -85,7 +88,7 @@ All on the Options page.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `Connect Strava` popup says "redirect_uri is invalid" | Callback domain on your Strava app isn't `chromiumapp.org` | Edit at [strava.com/settings/api](https://www.strava.com/settings/api), exact string `chromiumapp.org`. |
-| `Refresh failed: rate limited` in the popup | Strava 200/15-min limit hit | Wait until the next 15-min boundary. Big refreshes on a long lookback can trigger this. |
+| `Rate limited — try again at HH:MM` on the Load more button | Strava 100/15-min non-upload limit hit by an auto-continue chain | Wait until the displayed time. The button re-enables automatically. |
 | "Invalid User!!!" page when a tab opens | Climber ID not saved (or wrong) in Options | Re-check your cid from peakbagger's My Home Page URL; Save. |
 | Tab opens with peak name visible but other fields blank | Content script silently bailed (the most common cause was a `pid` parsing issue, fixed in v0.1.0) | In the page's DevTools Console, set log level to **Verbose** and look for `[s2p]` messages. |
 | Activity stays visible after saving | Post-save signal didn't reach the SW. The Step-12 SW tab-mapping should prevent this, but the **Hide** button is the manual recovery. | Click Hide on the row, or open the **Options → Recent log** section to see what happened. |
@@ -124,7 +127,7 @@ The **Options → Recent log** section shows the last 50 events (connect, refres
 - **Personal use only.** Your Strava OAuth `client_secret` lives in `chrome.storage.local`. Strava's API agreement frowns on embedding secrets in clients; this is acceptable for a single-user install where you control both ends, but you should never publish a forked version of this extension that ships someone else's secret.
 - **Peakbagger ToS forbids automated scraping.** The extension keeps a human in the loop (you click Save) and is rate-limited and sends a polite User-Agent. This mirrors the posture of [`npwolf/peakbagger_gpx_ascent_logger`](https://github.com/npwolf/peakbagger_gpx_ascent_logger). If you intend to share this beyond personal use, contact Greg Slayden (peakbagger's owner) first.
 - **Strava Single-Player Mode** — since Nov 2024, new Strava API apps cap at 1 authorized athlete unless approved by Strava. Fine for personal use; not for distribution.
-- **Lazy matching.** The popup doesn't show peak counts until you click Open on an activity. Snappier popup; tradeoff is no peak-count preview.
+- **Eager batched matching.** v0.2 changed the model from "click Open to find out" to "open popup, see matches." A batch of 20 fresh activities auto-runs on first open of each local day. The popup hides activities that scanned to zero matches.
 - **No multi-ascent trip automation in v1.** Tabs open in parallel; you handle peakbagger's trip-grouping UI manually.
 - **Peakbagger's PLLBB endpoint doesn't return elevation**, so the vertical match gate (`vertM`) is dormant in v1. The horizontal gate (`horizM`) does all the filtering.
 
