@@ -143,12 +143,16 @@ async function maybeAutoTrigger(): Promise<void> {
       setStatus(`Refresh failed: ${friendlyError(refreshRes.error)}`);
       return;
     }
+    // Auto-trigger always starts from index 0 of the cached
+    // activities list (which is sorted by start desc, so new
+    // activities sit at the top). The activityMatches cache makes
+    // walking past already-scanned entries instant — only new
+    // unmatched ones run the matcher.
     await setMatchSession({
       lastAutoRefreshDay: today,
       lastBatchEndIndex: 0,
     });
     await renderActivities();
-    // Fire-and-forget; results stream in via matchBatch:item events.
     await send({
       type: "matchBatch",
       startIndex: 0,
@@ -167,12 +171,12 @@ async function handleBatchItem(msg: unknown): Promise<void> {
     totalScanned?: number;
   };
   sessionScanned += 1;
-  if ((m.peakCount ?? 0) > 0) sessionMatches += 1;
+  // Count only matches that produce visible (pending) rows so the
+  // counter and the list stay in sync. An already-done match
+  // increments sessionScanned but not sessionMatches.
+  if (m.addedPendingRow) sessionMatches += 1;
   updateProgressDisplay();
-  // Re-render whenever any match is found (pending OR done). The
-  // default-view filter passes done activities through so the user
-  // sees them surfacing in real time.
-  if ((m.peakCount ?? 0) > 0) {
+  if (m.addedPendingRow) {
     await renderActivities();
   }
 }
@@ -329,27 +333,15 @@ function buildRow(activity: EnrichedActivity): HTMLLIElement {
 }
 
 function renderBadge(activity: EnrichedActivity): string {
-  if (activity.state === "pending") {
-    const total = activity.matchedPeakIds?.length ?? 0;
-    const done = activity.processedPeakIds?.length ?? 0;
-    return `<span class="match-badge">${done}/${total} saved</span>`;
-  }
-  if (activity.state === "done") {
-    const total = activity.matchedPeakIds?.length ?? 0;
-    return `<span class="match-badge done">${total}/${total} saved</span>`;
-  }
-  return "";
+  if (activity.state !== "pending") return "";
+  const total = activity.matchedPeakIds?.length ?? 0;
+  const done = activity.processedPeakIds?.length ?? 0;
+  return `<span class="match-badge">${done}/${total} saved</span>`;
 }
 
 function renderActionButtons(activity: EnrichedActivity): string {
-  if (activity.state === "hidden") {
+  if (activity.state === "done" || activity.state === "hidden") {
     return `<button class="unhide-btn" type="button" data-strava-id="${activity.id}">Unhide</button>`;
-  }
-  if (activity.state === "done") {
-    // Done activities show in the default view (so the user sees
-    // what's been logged) but get a Hide button to clear them once
-    // they're not interesting anymore.
-    return `<button class="hide-btn" type="button" data-strava-id="${activity.id}">Hide</button>`;
   }
   // unmatched OR pending
   return `
@@ -408,7 +400,12 @@ async function handleLog(
   try {
     const res = await send({ type: "logAscents", stravaId });
     if (!res.ok) {
-      rowStatus.textContent = friendlyError(res.error);
+      if (/logged out/i.test(res.error)) {
+        rowStatus.innerHTML =
+          'Logged out — <a href="https://peakbagger.com/Climber/Login.aspx" target="_blank" rel="noopener">log in</a> and try again';
+      } else {
+        rowStatus.textContent = friendlyError(res.error);
+      }
     } else if ((res.openedCount ?? 0) === 0) {
       if ((res.totalMatches ?? 0) === 0) {
         rowStatus.textContent = "No peak matches";

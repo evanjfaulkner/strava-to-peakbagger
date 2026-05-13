@@ -12,6 +12,7 @@ import {
   _resetTokenBucketForTesting,
   bboxForTileKey,
   expandBbox,
+  isPeakbaggerLoggedIn,
   parsePllbbXml,
   peaksForBbox,
   peaksForTrack,
@@ -415,5 +416,48 @@ describe("peaksForTrack", () => {
     // single fixture peak.
     expect(peaks).toHaveLength(1);
     expect(peaks[0]!.peakId).toBe(1);
+  });
+});
+
+describe("isPeakbaggerLoggedIn", () => {
+  it("returns true when peakbagger returns the ascentedit page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response("<html>...form...</html>", {
+            status: 200,
+            // Response.url reflects where the request ended up.
+            // For a no-redirect 200, it's the original URL.
+          }),
+        ),
+      ),
+    );
+    expect(await isPeakbaggerLoggedIn()).toBe(true);
+  });
+
+  it("returns false when peakbagger redirects to Login.aspx", async () => {
+    // Simulate a redirect chain by returning a Response whose url
+    // points at the login page (what happens after redirect:follow).
+    const loginRes = Object.defineProperty(
+      new Response("<html>login</html>", { status: 200 }),
+      "url",
+      { value: "https://peakbagger.com/Climber/Login.aspx" },
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() => Promise.resolve(loginRes)),
+    );
+    expect(await isPeakbaggerLoggedIn()).toBe(false);
+  });
+
+  it("treats fetch errors as logged-in (conservative)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() => Promise.reject(new Error("offline"))),
+    );
+    expect(await isPeakbaggerLoggedIn()).toBe(true);
+    expect(warn).toHaveBeenCalled();
   });
 });

@@ -108,7 +108,7 @@ describe("handleGetActivities", () => {
     });
   });
 
-  it("keeps done activities visible in the default view (v0.2.1)", async () => {
+  it("filters out done activities by default", async () => {
     const otherActivity = { ...FAKE_ACTIVITY, id: 222, name: "Pending Hike" };
     storage.bag["activities"] = [FAKE_ACTIVITY, otherActivity];
     storage.bag["activityMatches"] = {
@@ -124,21 +124,9 @@ describe("handleGetActivities", () => {
     const res = await handleGetActivities();
     if (!res.ok) throw new Error("expected ok");
 
-    // v0.2.1: done is no longer filtered from the default view —
-    // both activities show. The pending one shows as "pending",
-    // the fully-saved one as "done".
-    const byId = new Map(res.activities.map((a) => [a.id, a.state]));
-    expect(byId.get(FAKE_ACTIVITY.id)).toBe("done");
-    expect(byId.get(222)).toBe("pending");
-  });
-
-  it("still filters hidden activities from the default view", async () => {
-    storage.bag["activities"] = [FAKE_ACTIVITY];
-    storage.bag["hiddenActivities"] = { [FAKE_ACTIVITY.id]: { hiddenAt: 1 } };
-
-    const res = await handleGetActivities();
-    if (!res.ok) throw new Error("expected ok");
-    expect(res.activities).toHaveLength(0);
+    const ids = res.activities.map((a) => a.id);
+    expect(ids).toEqual([222]); // only the pending one
+    expect(res.activities[0]?.state).toBe("pending");
   });
 
   it("with showHidden=true returns done activities too", async () => {
@@ -982,7 +970,7 @@ describe("handleMatchBatch", () => {
     expect(cache[2]?.computedAt).toBe(0); // untouched
   });
 
-  it("auto-continue stops on any match, including already-processed (v0.2.1)", async () => {
+  it("auto-continue stops on the first pending match, not already-processed", async () => {
     storage.bag["activities"] = Array.from({ length: 5 }, (_, i) => mkActivity(i + 1));
     storage.bag["processed"] = {
       "1:4242": { processedAt: 0, ascentId: 99 }, // already saved
@@ -992,12 +980,11 @@ describe("handleMatchBatch", () => {
     const res = await handleMatchBatch({ startIndex: 0, size: 10 });
     if (!res.ok) throw new Error("unexpected");
 
-    // v0.2.1: stop on ANY match, even if all peaks are already-
-    // processed. Activity 1 matches → addedPendingRow=false but
-    // peakCount=1 → loop stops here.
+    // Activity 1 matched but already-processed → addedPendingRow=false.
+    // Activity 2 matched and is pending → addedPendingRow=true → stop.
     expect(res.reason).toBe("found-pending");
-    expect(res.totalScanned).toBe(1);
-    expect(res.totalMatches).toBe(1);
+    expect(res.totalScanned).toBe(2);
+    expect(res.totalMatches).toBe(2);
   });
 
   it("writes prefillPayloads for every matched peakId", async () => {
@@ -1040,6 +1027,15 @@ describe("handleMatchBatch", () => {
 describe("handleLogAscents", () => {
   beforeEach(() => {
     storage.bag["pb"] = { climberId: 99 };
+    // Default: peakbagger session check returns "logged in" so the
+    // existing tests proceed to tab opens. Logged-out test
+    // overrides this.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response("<html>form</html>", { status: 200 })),
+      ),
+    );
   });
 
   it("rejects an invalid stravaId", async () => {
@@ -1122,6 +1118,30 @@ describe("handleLogAscents", () => {
     expect((res as { openedCount: number }).openedCount).toBe(1);
     expect(storage.tabsCreated).toHaveLength(1);
     expect(storage.tabsCreated[0]?.url).toContain("pid=2");
+  });
+
+  it("returns logged-out error when peakbagger session probe fails", async () => {
+    storage.bag["activityMatches"] = {
+      12345: { peakIds: [1], computedAt: 0 },
+    };
+    storage.bag["prefillPayloads"] = {
+      "12345:1": { pid: 1 } as never,
+    };
+    // Override the default-logged-in fetch with a redirect-to-login.
+    const loginRes = Object.defineProperty(
+      new Response("login", { status: 200 }),
+      "url",
+      { value: "https://peakbagger.com/Climber/Login.aspx" },
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() => Promise.resolve(loginRes)),
+    );
+
+    const res = await handleLogAscents(12345);
+    expect(res.ok).toBe(false);
+    expect((res as { error: string }).error).toMatch(/Logged out/);
+    expect(storage.tabsCreated).toEqual([]);
   });
 
   it("records pendingTabSaves for each opened tab", async () => {

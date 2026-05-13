@@ -3,6 +3,10 @@ import type { Peak, Track } from "./models";
 import { get, set } from "./storage";
 
 export const PLLBB_URL = "https://peakbagger.com/Async/PLLBB.aspx";
+export const PEAKBAGGER_LOGIN_URL =
+  "https://peakbagger.com/Climber/Login.aspx";
+const PEAKBAGGER_SESSION_PROBE_URL =
+  "https://peakbagger.com/climber/ascentedit.aspx?aid=-1";
 export const TILE_SIZE_DEG = 0.1;
 export const TILE_TTL_MS = 7 * 24 * 3600 * 1000;
 export const USER_AGENT =
@@ -98,6 +102,31 @@ export function parsePllbbXml(xml: string): Peak[] {
     });
   }
   return peaks;
+}
+
+/**
+ * Quick check: does the user have an active peakbagger session?
+ * Fires a fetch to a logged-in-only page and detects whether
+ * peakbagger redirected us to the login page. Used by
+ * handleLogAscents to avoid opening a flurry of useless tabs when
+ * the session has expired.
+ *
+ * Returns true if logged in OR if the check itself failed (we'd
+ * rather over-open than block the happy path on a transient
+ * network error — the wasted tabs are recoverable).
+ */
+export async function isPeakbaggerLoggedIn(): Promise<boolean> {
+  try {
+    const res = await fetch(PEAKBAGGER_SESSION_PROBE_URL, {
+      redirect: "follow",
+      credentials: "include",
+    });
+    // Peakbagger redirects logged-out requests to Climber/Login.aspx.
+    return !res.url.toLowerCase().includes("/climber/login.aspx");
+  } catch (e) {
+    console.warn("[s2p] peakbagger session check failed:", e);
+    return true;
+  }
 }
 
 export async function peaksInBbox(bbox: Bbox): Promise<Peak[]> {

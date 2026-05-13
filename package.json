@@ -1,6 +1,6 @@
 {
   "name": "strava-to-peakbagger",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Chrome extension that syncs Strava activities to peakbagger.com ascents",
   "private": true,
   "type": "module",

@@ -1,7 +1,7 @@
 import KDBush from "kdbush";
 import { log } from "../lib/log";
 import { matchSummits } from "../lib/matcher";
-import { peaksForTrack } from "../lib/peakbagger";
+import { isPeakbaggerLoggedIn, peaksForTrack } from "../lib/peakbagger";
 import { buildPrefill } from "../lib/prefill";
 import {
   get,
@@ -202,14 +202,17 @@ export async function handleGetActivities(
       };
     });
 
-    // Default view filters out hidden and no-match activities, but
-    // keeps done ones visible so the user can see what's been
-    // saved without flipping the Show hidden toggle. Matched
-    // activities that are fully done get a Hide button to clean up.
+    // Default view filters out done, hidden, and no-match
+    // activities — only actionable pending rows surface. As ascents
+    // get saved, activities transition to done and drop out of the
+    // list. Show hidden reveals all states for recovery.
     const filtered = showHidden
       ? enriched
       : enriched.filter(
-          (a) => a.state !== "hidden" && a.state !== "no-match",
+          (a) =>
+            a.state !== "done" &&
+            a.state !== "hidden" &&
+            a.state !== "no-match",
         );
     return { ok: true, activities: filtered };
   } catch (e) {
@@ -397,10 +400,10 @@ export async function handleMatchBatch(
           totalScanned,
         });
 
-        // Stop on any match (pending OR done), so the user sees
-        // results as soon as anything surfaces. Saves API budget
-        // vs. continuing to scan for pending-specifically.
-        if (peakCount > 0) {
+        // Stop on a pending row (a match with at least one peak
+        // that isn't already saved). Already-done matches keep the
+        // loop running — the user is looking for actionable items.
+        if (addedPendingRow) {
           reason = "found-pending";
           break outer;
         }
@@ -487,6 +490,18 @@ export async function handleLogAscents(
         ok: true,
         openedCount: 0,
         totalMatches: entry.peakIds.length,
+      };
+    }
+
+    // Pre-flight session check. peakbagger silently renders an
+    // empty Add-Ascent template when logged out (no peak name, no
+    // climber name) which previously produced useless tabs.
+    const loggedIn = await isPeakbaggerLoggedIn();
+    if (!loggedIn) {
+      return {
+        ok: false,
+        error:
+          "Logged out of peakbagger — log in at peakbagger.com and try again",
       };
     }
 
