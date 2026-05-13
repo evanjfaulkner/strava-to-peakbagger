@@ -45,6 +45,12 @@ export type Storage = {
   prefillPayloads: Record<string, PrefillPayload>;
   processed: Record<string, { processedAt: number; ascentId: number | null }>;
   activityMatches: Record<number, { peakIds: number[]; computedAt: number }>;
+  // Stores user-dismissed activities keyed by stravaId. Lets Hide
+  // work on activities the user has never clicked Open on (no
+  // activityMatches entry). For activities WITH matches, Hide ALSO
+  // writes null-ascentId entries to `processed` so re-clicking Open
+  // after Unhide doesn't re-open already-saved peakbagger tabs.
+  hiddenActivities: Record<number, { hiddenAt: number }>;
   log: LogEntry[];
 };
 

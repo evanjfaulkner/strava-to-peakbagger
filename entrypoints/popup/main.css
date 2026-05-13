@@ -50,6 +50,16 @@ header {
   cursor: pointer;
 }
 
+button.secondary {
+  background: white;
+  color: #2563eb;
+  border-color: #d1d5db;
+}
+
+button.secondary:hover {
+  background: #f3f4f6;
+}
+
 h1 {
   margin: 0;
   font-size: 14px;

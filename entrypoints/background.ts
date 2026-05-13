@@ -134,7 +134,7 @@ export async function runWatchdog(): Promise<{
 // Real handlers (popup-facing)
 // ============================================================
 
-export type ActivityState = "unmatched" | "pending" | "done";
+export type ActivityState = "unmatched" | "pending" | "done" | "hidden";
 export type EnrichedActivity = ActivitySummary & {
   state: ActivityState;
   matchedPeakIds?: number[];
@@ -148,17 +148,32 @@ export async function handleGetActivities(
     const activities = (await get("activities")) ?? [];
     const activityMatches = (await get("activityMatches")) ?? {};
     const processed = (await get("processed")) ?? {};
+    const hiddenActivities = (await get("hiddenActivities")) ?? {};
 
     const enriched: EnrichedActivity[] = activities.map((a) => {
       const matches = activityMatches[a.id];
+      const isHidden = !!hiddenActivities[a.id];
+
       if (!matches) {
-        return { ...a, state: "unmatched" };
+        // No match cache: either user has never clicked Open, or
+        // they clicked Hide on an unmatched activity.
+        const state: ActivityState = isHidden ? "hidden" : "unmatched";
+        return { ...a, state };
       }
+
       const processedForThis = matches.peakIds.filter(
         (pid) => processed[`${a.id}:${pid}`],
       );
-      const state: ActivityState =
-        processedForThis.length === matches.peakIds.length ? "done" : "pending";
+      let state: ActivityState;
+      if (processedForThis.length === matches.peakIds.length) {
+        state = "done";
+      } else if (isHidden) {
+        // Hidden takes precedence over a partial-save state — the
+        // user explicitly said "don't show me this."
+        state = "hidden";
+      } else {
+        state = "pending";
+      }
       return {
         ...a,
         state,
@@ -169,7 +184,7 @@ export async function handleGetActivities(
 
     const filtered = showHidden
       ? enriched
-      : enriched.filter((a) => a.state !== "done");
+      : enriched.filter((a) => a.state !== "done" && a.state !== "hidden");
     return { ok: true, activities: filtered };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
@@ -330,24 +345,30 @@ export async function handleMarkActivityHidden(
     if (!Number.isFinite(stravaId) || stravaId <= 0) {
       return { ok: false, error: "Invalid stravaId" };
     }
+
+    // Always set the hiddenActivities entry — works for unmatched
+    // activities (no match cache) and matched alike.
+    const hiddenActivities = (await get("hiddenActivities")) ?? {};
+    hiddenActivities[stravaId] = { hiddenAt: Date.now() };
+    await set("hiddenActivities", hiddenActivities);
+
+    // If we have a match cache, ALSO write null-ascentId entries to
+    // processed for un-saved peakIds so a future re-Open doesn't
+    // re-open already-handled tabs.
     const activityMatches = (await get("activityMatches")) ?? {};
     const entry = activityMatches[stravaId];
-    if (!entry) {
-      return {
-        ok: false,
-        error: "Activity has no cached matches — click Open first",
-      };
-    }
-    const processed = (await get("processed")) ?? {};
     let hiddenCount = 0;
-    for (const peakId of entry.peakIds) {
-      const key = `${stravaId}:${peakId}`;
-      if (!processed[key]) {
-        processed[key] = { processedAt: Date.now(), ascentId: null };
-        hiddenCount++;
+    if (entry) {
+      const processed = (await get("processed")) ?? {};
+      for (const peakId of entry.peakIds) {
+        const key = `${stravaId}:${peakId}`;
+        if (!processed[key]) {
+          processed[key] = { processedAt: Date.now(), ascentId: null };
+          hiddenCount++;
+        }
       }
+      await set("processed", processed);
     }
-    await set("processed", processed);
     return { ok: true, hiddenCount };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
@@ -361,22 +382,84 @@ export async function handleMarkActivityUnhidden(
     if (!Number.isFinite(stravaId) || stravaId <= 0) {
       return { ok: false, error: "Invalid stravaId" };
     }
+
+    // Clear the hiddenActivities entry.
+    const hiddenActivities = (await get("hiddenActivities")) ?? {};
+    const wasHidden = !!hiddenActivities[stravaId];
+    if (wasHidden) {
+      delete hiddenActivities[stravaId];
+      await set("hiddenActivities", hiddenActivities);
+    }
+
+    // Also clear the null-ascentId processed entries written by Hide
+    // (i.e. user-dismissed peaks). Preserve real ascentIds — those
+    // are actual saves on peakbagger and shouldn't be forgotten.
     const activityMatches = (await get("activityMatches")) ?? {};
     const entry = activityMatches[stravaId];
-    if (!entry) {
-      return { ok: true, unhiddenCount: 0 };
+    let unhiddenCount = wasHidden ? 1 : 0;
+    if (entry) {
+      const processed = (await get("processed")) ?? {};
+      for (const peakId of entry.peakIds) {
+        const key = `${stravaId}:${peakId}`;
+        const rec = processed[key];
+        if (rec && rec.ascentId === null) {
+          delete processed[key];
+          unhiddenCount++;
+        }
+      }
+      await set("processed", processed);
     }
+    return { ok: true, unhiddenCount };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+export async function handleHideAllVisible(): Promise<
+  Resp<{ hiddenCount: number }>
+> {
+  try {
+    const activities = (await get("activities")) ?? [];
+    const activityMatches = (await get("activityMatches")) ?? {};
     const processed = (await get("processed")) ?? {};
-    let unhiddenCount = 0;
-    for (const peakId of entry.peakIds) {
-      const key = `${stravaId}:${peakId}`;
-      if (processed[key]) {
-        delete processed[key];
-        unhiddenCount++;
+    const hiddenActivities = (await get("hiddenActivities")) ?? {};
+
+    let hiddenCount = 0;
+    for (const a of activities) {
+      // Skip activities already hidden or fully done — they're not
+      // visible in the default popup view, so "hide all visible"
+      // shouldn't touch them.
+      if (hiddenActivities[a.id]) continue;
+      const matches = activityMatches[a.id];
+      if (matches) {
+        const allProcessed = matches.peakIds.every(
+          (pid) => processed[`${a.id}:${pid}`],
+        );
+        if (allProcessed) continue;
+      }
+
+      hiddenActivities[a.id] = { hiddenAt: Date.now() };
+      hiddenCount++;
+
+      // Same as single-Hide: also write null-ascentId entries for
+      // any matched peakIds not yet in processed, so re-Open later
+      // doesn't re-open tabs we said to dismiss.
+      if (matches) {
+        for (const peakId of matches.peakIds) {
+          const key = `${a.id}:${peakId}`;
+          if (!processed[key]) {
+            processed[key] = { processedAt: Date.now(), ascentId: null };
+          }
+        }
       }
     }
-    await set("processed", processed);
-    return { ok: true, unhiddenCount };
+
+    if (hiddenCount > 0) {
+      await set("hiddenActivities", hiddenActivities);
+      await set("processed", processed);
+      void log("info", "Hide-all-visible swept activities", { hiddenCount });
+    }
+    return { ok: true, hiddenCount };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
   }
@@ -447,6 +530,12 @@ export default defineBackground(() => {
       const stravaId = Number(msg?.stravaId);
       void handleMarkActivityUnhidden(stravaId).then(sendResponse).catch(
         (e: unknown) => sendResponse({ ok: false, error: errMessage(e) }),
+      );
+      return true;
+    }
+    if (type === "hideAllVisible") {
+      void handleHideAllVisible().then(sendResponse).catch((e: unknown) =>
+        sendResponse({ ok: false, error: errMessage(e) }),
       );
       return true;
     }

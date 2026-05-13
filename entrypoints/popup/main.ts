@@ -1,7 +1,7 @@
 import { getClimberId } from "../../lib/storage";
 import type { ActivitySummary } from "../../lib/models";
 
-type ActivityState = "unmatched" | "pending" | "done";
+type ActivityState = "unmatched" | "pending" | "done" | "hidden";
 type EnrichedActivity = ActivitySummary & {
   state: ActivityState;
   matchedPeakIds?: number[];
@@ -50,6 +50,13 @@ export async function init(): Promise<void> {
     showHidden = (e.target as HTMLInputElement).checked;
     void renderActivities();
   });
+
+  const hideAllBtn = document.getElementById("hide-all-btn");
+  if (hideAllBtn instanceof HTMLButtonElement) {
+    hideAllBtn.addEventListener("click", () => {
+      void handleHideAll();
+    });
+  }
 }
 
 async function renderActivities(): Promise<void> {
@@ -121,7 +128,7 @@ function renderBadge(activity: EnrichedActivity): string {
 }
 
 function renderActionButtons(activity: EnrichedActivity): string {
-  if (activity.state === "done") {
+  if (activity.state === "done" || activity.state === "hidden") {
     return `<button class="unhide-btn" type="button" data-strava-id="${activity.id}">Unhide</button>`;
   }
   // unmatched OR pending
@@ -129,6 +136,27 @@ function renderActionButtons(activity: EnrichedActivity): string {
     <button class="open-btn" type="button" data-strava-id="${activity.id}">Open</button>
     <button class="hide-btn" type="button" data-strava-id="${activity.id}">Hide</button>
   `;
+}
+
+async function handleHideAll(): Promise<void> {
+  const btn = el<HTMLButtonElement>("hide-all-btn");
+  btn.disabled = true;
+  const previousText = btn.textContent ?? "Hide all";
+  btn.textContent = "Hiding…";
+
+  try {
+    const res = await send({ type: "hideAllVisible" });
+    if (!res.ok) {
+      setStatus(`Hide all failed: ${res.error}`);
+    } else {
+      const n = res.hiddenCount ?? 0;
+      setStatus(n === 0 ? "Nothing to hide" : `Hid ${n} activit${n === 1 ? "y" : "ies"}`);
+    }
+    await renderActivities();
+  } finally {
+    btn.textContent = previousText;
+    btn.disabled = false;
+  }
 }
 
 async function handleRefresh(): Promise<void> {

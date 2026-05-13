@@ -35,6 +35,7 @@ describe("generic get/set", () => {
       ["prefillPayloads", {}],
       ["processed", { "1:2": { processedAt: 1, ascentId: 99 } }],
       ["activityMatches", { 1: { peakIds: [2, 3], computedAt: 100 } }],
+      ["hiddenActivities", { 42: { hiddenAt: 1000 } }],
       ["log", []],
     ];
 

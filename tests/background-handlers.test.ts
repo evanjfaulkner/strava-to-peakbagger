@@ -21,6 +21,7 @@ let handleProcessActivity: typeof import("../entrypoints/background").handleProc
 let handleAscentSaved: typeof import("../entrypoints/background").handleAscentSaved;
 let handleMarkActivityHidden: typeof import("../entrypoints/background").handleMarkActivityHidden;
 let handleMarkActivityUnhidden: typeof import("../entrypoints/background").handleMarkActivityUnhidden;
+let handleHideAllVisible: typeof import("../entrypoints/background").handleHideAllVisible;
 let handleGetTabMapping: typeof import("../entrypoints/background").handleGetTabMapping;
 let runWatchdog: typeof import("../entrypoints/background").runWatchdog;
 
@@ -32,6 +33,7 @@ beforeAll(async () => {
   handleAscentSaved = mod.handleAscentSaved;
   handleMarkActivityHidden = mod.handleMarkActivityHidden;
   handleMarkActivityUnhidden = mod.handleMarkActivityUnhidden;
+  handleHideAllVisible = mod.handleHideAllVisible;
   handleGetTabMapping = mod.handleGetTabMapping;
   runWatchdog = mod.runWatchdog;
 });
@@ -138,6 +140,20 @@ describe("handleGetActivities", () => {
     if (!res.ok) throw new Error("expected ok");
     expect(res.activities).toHaveLength(1);
     expect(res.activities[0]?.state).toBe("done");
+  });
+
+  it('tags an unmatched-but-hidden activity as state "hidden" and excludes it from the default view', async () => {
+    storage.bag["activities"] = [FAKE_ACTIVITY];
+    storage.bag["hiddenActivities"] = { [FAKE_ACTIVITY.id]: { hiddenAt: 1 } };
+
+    const defaultRes = await handleGetActivities();
+    if (!defaultRes.ok) throw new Error("expected ok");
+    expect(defaultRes.activities).toHaveLength(0);
+
+    const fullRes = await handleGetActivities(true);
+    if (!fullRes.ok) throw new Error("expected ok");
+    expect(fullRes.activities).toHaveLength(1);
+    expect(fullRes.activities[0]?.state).toBe("hidden");
   });
 });
 
@@ -411,7 +427,17 @@ describe("handleAscentSaved", () => {
 });
 
 describe("handleMarkActivityHidden", () => {
-  it("adds null-ascentId entries for all peakIds not yet processed", async () => {
+  it("works on an unmatched activity (no activityMatches entry)", async () => {
+    const res = await handleMarkActivityHidden(999);
+    expect(res).toEqual({ ok: true, hiddenCount: 0 });
+    const hidden = storage.bag["hiddenActivities"] as Record<
+      number,
+      { hiddenAt: number }
+    >;
+    expect(hidden[999]?.hiddenAt).toBeGreaterThan(0);
+  });
+
+  it("adds null-ascentId entries for unprocessed peakIds when matches exist", async () => {
     storage.bag["activityMatches"] = {
       777: { peakIds: [1, 2, 3], computedAt: 0 },
     };
@@ -426,45 +452,139 @@ describe("handleMarkActivityHidden", () => {
       string,
       { processedAt: number; ascentId: number | null }
     >;
-    expect(processed["777:1"]?.ascentId).toBe(99); // unchanged
+    expect(processed["777:1"]?.ascentId).toBe(99); // unchanged (real save)
     expect(processed["777:2"]?.ascentId).toBeNull();
     expect(processed["777:3"]?.ascentId).toBeNull();
-  });
-
-  it("returns ok:false when no activityMatches entry exists", async () => {
-    const res = await handleMarkActivityHidden(999);
-    expect(res.ok).toBe(false);
-    expect((res as { error: string }).error).toMatch(/click Open first/);
+    // hiddenActivities entry also written.
+    const hidden = storage.bag["hiddenActivities"] as Record<
+      number,
+      { hiddenAt: number }
+    >;
+    expect(hidden[777]).toBeDefined();
   });
 });
 
 describe("handleMarkActivityUnhidden", () => {
-  it("removes all peakId entries for the activity", async () => {
+  it("preserves real ascentIds; only deletes null-ascent entries", async () => {
+    storage.bag["hiddenActivities"] = { 777: { hiddenAt: 50 } };
     storage.bag["activityMatches"] = {
       777: { peakIds: [1, 2, 3], computedAt: 0 },
     };
     storage.bag["processed"] = {
-      "777:1": { processedAt: 100, ascentId: 99 },
-      "777:2": { processedAt: 200, ascentId: null },
-      "777:3": { processedAt: 300, ascentId: 42 },
-      "888:1": { processedAt: 400, ascentId: 7 },
+      "777:1": { processedAt: 100, ascentId: 99 }, // real save
+      "777:2": { processedAt: 200, ascentId: null }, // null = dismissed
+      "777:3": { processedAt: 300, ascentId: 42 }, // real save
+      "888:1": { processedAt: 400, ascentId: 7 }, // unrelated
     };
 
     const res = await handleMarkActivityUnhidden(777);
 
-    expect(res).toEqual({ ok: true, unhiddenCount: 3 });
+    expect(res.ok).toBe(true);
+    expect((res as { unhiddenCount: number }).unhiddenCount).toBe(2); // 1 hidden flag + 1 null entry
     const processed = storage.bag["processed"] as Record<string, unknown>;
-    expect(Object.keys(processed)).toEqual(["888:1"]);
+    // Real ascentIds preserved; only the null entry deleted.
+    expect(Object.keys(processed).sort()).toEqual(["777:1", "777:3", "888:1"]);
+    const hidden = storage.bag["hiddenActivities"] as Record<number, unknown>;
+    expect(hidden[777]).toBeUndefined();
   });
 
-  it("is a no-op when no activityMatches entry exists", async () => {
-    storage.bag["processed"] = {
-      "777:1": { processedAt: 100, ascentId: 99 },
-    };
+  it("works on an unmatched (hidden-only) activity", async () => {
+    storage.bag["hiddenActivities"] = { 999: { hiddenAt: 50 } };
+
+    const res = await handleMarkActivityUnhidden(999);
+
+    expect(res.ok).toBe(true);
+    expect((res as { unhiddenCount: number }).unhiddenCount).toBe(1);
+    const hidden = storage.bag["hiddenActivities"] as Record<number, unknown>;
+    expect(hidden[999]).toBeUndefined();
+  });
+
+  it("is a no-op when activity isn't hidden", async () => {
     const res = await handleMarkActivityUnhidden(999);
     expect(res).toEqual({ ok: true, unhiddenCount: 0 });
-    const processed = storage.bag["processed"] as Record<string, unknown>;
-    expect(Object.keys(processed)).toEqual(["777:1"]); // untouched
+  });
+});
+
+describe("handleHideAllVisible", () => {
+  it("hides every unmatched and pending activity, leaves done untouched", async () => {
+    storage.bag["activities"] = [
+      {
+        id: 1,
+        start: "x",
+        startLocal: "x",
+        tz: "UTC",
+        name: "unmatched",
+        sportType: "Hike",
+        distanceM: 0,
+        elevGainM: 0,
+      },
+      {
+        id: 2,
+        start: "x",
+        startLocal: "x",
+        tz: "UTC",
+        name: "pending",
+        sportType: "Hike",
+        distanceM: 0,
+        elevGainM: 0,
+      },
+      {
+        id: 3,
+        start: "x",
+        startLocal: "x",
+        tz: "UTC",
+        name: "done",
+        sportType: "Hike",
+        distanceM: 0,
+        elevGainM: 0,
+      },
+    ];
+    storage.bag["activityMatches"] = {
+      2: { peakIds: [10, 11], computedAt: 0 },
+      3: { peakIds: [20], computedAt: 0 },
+    };
+    storage.bag["processed"] = {
+      "2:10": { processedAt: 0, ascentId: 7 },
+      // 2:11 not processed → activity 2 is "pending"
+      "3:20": { processedAt: 0, ascentId: 5 },
+      // activity 3 is fully done
+    };
+
+    const res = await handleHideAllVisible();
+
+    expect(res.ok).toBe(true);
+    expect((res as { hiddenCount: number }).hiddenCount).toBe(2); // 1 + 2
+    const hidden = storage.bag["hiddenActivities"] as Record<
+      number,
+      { hiddenAt: number }
+    >;
+    expect(Object.keys(hidden).map(Number).sort()).toEqual([1, 2]);
+    expect(hidden[3]).toBeUndefined(); // done left alone
+  });
+
+  it("skips already-hidden activities", async () => {
+    storage.bag["activities"] = [
+      {
+        id: 1,
+        start: "x",
+        startLocal: "x",
+        tz: "UTC",
+        name: "u",
+        sportType: "Hike",
+        distanceM: 0,
+        elevGainM: 0,
+      },
+    ];
+    storage.bag["hiddenActivities"] = { 1: { hiddenAt: 100 } };
+
+    const res = await handleHideAllVisible();
+
+    expect((res as { hiddenCount: number }).hiddenCount).toBe(0);
+  });
+
+  it("returns 0 with empty activity list", async () => {
+    const res = await handleHideAllVisible();
+    expect(res).toEqual({ ok: true, hiddenCount: 0 });
   });
 });
 

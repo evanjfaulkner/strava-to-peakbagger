@@ -19,6 +19,7 @@ const PAGE_HTML = `
         <input id="show-hidden" type="checkbox" />
         Show hidden
       </label>
+      <button id="hide-all-btn" type="button">Hide all</button>
       <button id="refresh-btn" type="button">Refresh</button>
     </div>
   </header>
@@ -422,6 +423,34 @@ describe("popup — idempotency UI", () => {
 
     const status = document.querySelector(".row-status")?.textContent ?? "";
     expect(status).toContain("already saved");
+  });
+
+  it("Hide all button sends hideAllVisible and re-fetches", async () => {
+    sendMessage.mockResolvedValueOnce({
+      ok: true,
+      activities: [
+        makeActivity(101, "2026-05-08T17:00:00Z", "Hike", "T", {
+          state: "unmatched",
+        }),
+      ],
+    });
+    await init();
+    sendMessage.mockReset();
+    sendMessage
+      .mockResolvedValueOnce({ ok: true, hiddenCount: 1 })
+      .mockResolvedValueOnce({ ok: true, activities: [] });
+
+    const btn = document.getElementById("hide-all-btn") as HTMLButtonElement;
+    btn.click();
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(sendMessage.mock.calls[0]![0]).toEqual({ type: "hideAllVisible" });
+    expect(sendMessage.mock.calls[1]![0]).toMatchObject({
+      type: "getActivities",
+    });
+    expect(document.getElementById("status")?.textContent).toContain("Hid 1");
   });
 
   it("renders Strava rate-limit errors as a local time", async () => {
