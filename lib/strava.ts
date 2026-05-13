@@ -146,6 +146,21 @@ async function stravaGet(path: string): Promise<unknown> {
   const res = await fetch(`${STRAVA_API_BASE}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+
+  // Reactive rate-limit handling: if the proactive 95% gate didn't
+  // catch it, a 429 response means we hit the wall. Set the
+  // cooldown and throw the typed error so the caller (batch worker
+  // or popup) can surface the wait time.
+  if (res.status === 429) {
+    const retryAfter = Number(res.headers.get("Retry-After"));
+    const cooldown =
+      Number.isFinite(retryAfter) && retryAfter > 0
+        ? Date.now() + retryAfter * 1000
+        : Math.ceil(Date.now() / RATE_LIMIT_BUCKET_MS) * RATE_LIMIT_BUCKET_MS;
+    await setNextRetryAt(cooldown);
+    throw new StravaRateLimitError(cooldown);
+  }
+
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new StravaHTTPError(res.status, body);

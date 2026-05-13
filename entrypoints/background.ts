@@ -8,9 +8,15 @@ import {
   getClimberId,
   getSettings,
   set,
+  setMatchSession,
 } from "../lib/storage";
 import type { Settings } from "../lib/storage";
-import { fetchActivitiesSince, fetchStreams } from "../lib/strava";
+import {
+  StravaRateLimitError,
+  StravaNoGPSError,
+  fetchActivitiesSince,
+  fetchStreams,
+} from "../lib/strava";
 import type {
   ActivitySummary,
   Match,
@@ -201,6 +207,224 @@ export async function handleRefreshActivities(): Promise<
     );
     const list = await fetchActivitiesSince(after);
     return { ok: true, count: list.length };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+// ============================================================
+// Batch matching (v0.2)
+// ============================================================
+
+export type MatchBatchRequest = {
+  startIndex: number;
+  size: number;
+  autoContinue?: boolean; // default true
+};
+
+export type MatchBatchReason =
+  | "found-pending"
+  | "rate-limited"
+  | "exhausted"
+  | "manual-stop";
+
+export type MatchBatchResult = {
+  sessionId: string;
+  totalScanned: number;
+  totalMatches: number;
+  endIndex: number;
+  reason: MatchBatchReason;
+};
+
+type PipelineOutcome =
+  | { kind: "rate-limited" }
+  | { kind: "no-gps" }
+  | { kind: "error" }
+  | { kind: "matched"; matchCount: number; addedPendingRow: boolean };
+
+async function emitMatchEvent(message: unknown): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage(message);
+  } catch {
+    // No popup listening → expected when running from SW console.
+  }
+}
+
+async function runPipelineForActivity(
+  activity: ActivitySummary,
+  settings: Settings,
+  processed: Record<string, { processedAt: number; ascentId: number | null }>,
+): Promise<PipelineOutcome> {
+  let track;
+  try {
+    track = await fetchStreams(activity.id);
+  } catch (e) {
+    if (e instanceof StravaRateLimitError) return { kind: "rate-limited" };
+    if (e instanceof StravaNoGPSError) {
+      const cache = (await get("activityMatches")) ?? {};
+      cache[activity.id] = { peakIds: [], computedAt: Date.now() };
+      await set("activityMatches", cache);
+      return { kind: "no-gps" };
+    }
+    void log("warn", "matchBatch: pipeline error", {
+      stravaId: activity.id,
+      error: errMessage(e),
+    });
+    const cache = (await get("activityMatches")) ?? {};
+    cache[activity.id] = { peakIds: [], computedAt: Date.now() };
+    await set("activityMatches", cache);
+    return { kind: "error" };
+  }
+
+  const peaks = await peaksForTrack(track, settings.horizM);
+  const matches = matchSummits(
+    track,
+    peaks,
+    { horizM: settings.horizM, vertM: settings.vertM },
+    new Date(activity.start),
+  );
+
+  const cache = (await get("activityMatches")) ?? {};
+  cache[activity.id] = {
+    peakIds: matches.map((m) => m.peak.peakId),
+    computedAt: Date.now(),
+  };
+  await set("activityMatches", cache);
+
+  if (matches.length > 0) {
+    const payloads = (await get("prefillPayloads")) ?? {};
+    for (const m of matches) {
+      payloads[`${activity.id}:${m.peak.peakId}`] = buildPrefill(
+        track,
+        m,
+        activity,
+      );
+    }
+    await set("prefillPayloads", payloads);
+  }
+
+  const addedPendingRow = matches.some(
+    (m) => !processed[`${activity.id}:${m.peak.peakId}`],
+  );
+  return { kind: "matched", matchCount: matches.length, addedPendingRow };
+}
+
+export async function handleMatchBatch(
+  req: MatchBatchRequest,
+): Promise<Resp<MatchBatchResult>> {
+  try {
+    const size = Math.max(1, Math.floor(req.size));
+    const autoContinue = req.autoContinue !== false;
+    const sessionId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `s-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    const activities = (await get("activities")) ?? [];
+    const settings = await getSettings();
+    const blacklist = new Set(settings.blacklist);
+
+    let i = Math.max(0, Math.floor(req.startIndex));
+    let totalScanned = 0;
+    let totalMatches = 0;
+    let reason: MatchBatchReason = "manual-stop";
+
+    outer: while (true) {
+      let attempted = 0;
+
+      while (attempted < size && i < activities.length) {
+        const activity = activities[i]!;
+        if (blacklist.has(activity.sportType)) {
+          i++;
+          continue;
+        }
+        const existingMatches = (await get("activityMatches")) ?? {};
+        if (existingMatches[activity.id]) {
+          i++;
+          continue;
+        }
+
+        const processed = (await get("processed")) ?? {};
+        const outcome = await runPipelineForActivity(
+          activity,
+          settings,
+          processed,
+        );
+
+        if (outcome.kind === "rate-limited") {
+          reason = "rate-limited";
+          // Cursor stays at this index — we'll retry this activity
+          // after the cooldown.
+          break outer;
+        }
+
+        const peakCount =
+          outcome.kind === "matched" ? outcome.matchCount : 0;
+        const addedPendingRow =
+          outcome.kind === "matched" ? outcome.addedPendingRow : false;
+
+        i++;
+        attempted++;
+        totalScanned++;
+        if (peakCount > 0) totalMatches++;
+
+        void emitMatchEvent({
+          type: "matchBatch:item",
+          sessionId,
+          stravaId: activity.id,
+          peakCount,
+          addedPendingRow,
+          totalScanned,
+        });
+
+        if (addedPendingRow) {
+          reason = "found-pending";
+          break outer;
+        }
+      }
+
+      // End of one inner batch.
+      const existing = (await get("matchSession")) ?? undefined;
+      await setMatchSession({
+        lastAutoRefreshDay: existing?.lastAutoRefreshDay ?? "",
+        lastBatchEndIndex: i,
+      });
+
+      if (i >= activities.length) {
+        reason = "exhausted";
+        break outer;
+      }
+      if (!autoContinue) {
+        reason = "manual-stop";
+        break outer;
+      }
+      // Otherwise: continue auto-batching.
+    }
+
+    // Final cursor write (in case we broke before the inner-end write).
+    const existing = (await get("matchSession")) ?? undefined;
+    await setMatchSession({
+      lastAutoRefreshDay: existing?.lastAutoRefreshDay ?? "",
+      lastBatchEndIndex: i,
+    });
+
+    void emitMatchEvent({
+      type: "matchBatch:done",
+      sessionId,
+      totalScanned,
+      totalMatches,
+      endIndex: i,
+      reason,
+    });
+
+    return {
+      ok: true,
+      sessionId,
+      totalScanned,
+      totalMatches,
+      endIndex: i,
+      reason,
+    };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
   }
@@ -517,6 +741,18 @@ export default defineBackground(() => {
       void handleProcessActivity(stravaId).then(sendResponse).catch(
         (e: unknown) => sendResponse({ ok: false, error: errMessage(e) }),
       );
+      return true;
+    }
+    if (type === "matchBatch") {
+      void handleMatchBatch({
+        startIndex: Number(msg?.startIndex ?? 0),
+        size: Number(msg?.size ?? 20),
+        autoContinue: msg?.autoContinue !== false,
+      })
+        .then(sendResponse)
+        .catch((e: unknown) =>
+          sendResponse({ ok: false, error: errMessage(e) }),
+        );
       return true;
     }
     if (type === "markActivityHidden") {

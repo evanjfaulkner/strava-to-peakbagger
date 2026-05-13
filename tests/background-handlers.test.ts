@@ -23,6 +23,7 @@ let handleMarkActivityHidden: typeof import("../entrypoints/background").handleM
 let handleMarkActivityUnhidden: typeof import("../entrypoints/background").handleMarkActivityUnhidden;
 let handleHideAllVisible: typeof import("../entrypoints/background").handleHideAllVisible;
 let handleGetTabMapping: typeof import("../entrypoints/background").handleGetTabMapping;
+let handleMatchBatch: typeof import("../entrypoints/background").handleMatchBatch;
 let runWatchdog: typeof import("../entrypoints/background").runWatchdog;
 
 beforeAll(async () => {
@@ -35,6 +36,7 @@ beforeAll(async () => {
   handleMarkActivityUnhidden = mod.handleMarkActivityUnhidden;
   handleHideAllVisible = mod.handleHideAllVisible;
   handleGetTabMapping = mod.handleGetTabMapping;
+  handleMatchBatch = mod.handleMatchBatch;
   runWatchdog = mod.runWatchdog;
 });
 
@@ -724,5 +726,284 @@ describe("runWatchdog", () => {
       unknown
     >;
     expect(Object.keys(remaining)).toEqual(["2:20"]);
+  });
+});
+
+describe("handleMatchBatch", () => {
+  // Synthetic activity helper.
+  function mkActivity(id: number, sport = "Hike") {
+    return {
+      id,
+      start: "2026-04-15T17:00:00Z",
+      startLocal: "2026-04-15T10:00:00",
+      tz: "America/Los_Angeles",
+      name: `act ${id}`,
+      sportType: sport,
+      distanceM: 1000,
+      elevGainM: 100,
+    };
+  }
+
+  // Mock fetch routing for the pipeline. Default: a streams response
+  // for activity N that summits a peak if `withMatch.has(N)`, plus a
+  // PLLBB tile response.
+  function setupFetchMock(opts: {
+    withMatch?: Set<number>;
+    rateLimitAt?: number; // activity id at which to throw 429
+    noGpsAt?: Set<number>;
+  } = {}): void {
+    const withMatch = opts.withMatch ?? new Set<number>();
+    const noGpsAt = opts.noGpsAt ?? new Set<number>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        // /streams in the URL → look up which activity ID
+        if (url.includes("/streams")) {
+          const m = url.match(/activities\/(\d+)\/streams/);
+          const id = m ? Number(m[1]) : NaN;
+          if (id === opts.rateLimitAt) {
+            return Promise.resolve(
+              new Response("rate limit", {
+                status: 429,
+                headers: {
+                  "X-Ratelimit-Limit": "100,1000",
+                  "X-Ratelimit-Usage": "96,500",
+                },
+              }),
+            );
+          }
+          if (noGpsAt.has(id)) {
+            return Promise.resolve(
+              new Response(JSON.stringify({}), { status: 200 }),
+            );
+          }
+          // Standard streams body summiting a peak only when withMatch.
+          const lat = withMatch.has(id) ? 37.7 : 38.0;
+          const lng = -122.4;
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                latlng: {
+                  data: [
+                    [lat - 0.001, lng],
+                    [lat, lng],
+                    [lat + 0.001, lng],
+                  ],
+                },
+                altitude: { data: [1000, 1500, 1200] },
+                time: { data: [0, 1800, 3600] },
+              }),
+              {
+                status: 200,
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Ratelimit-Limit": "100,1000",
+                  "X-Ratelimit-Usage": "5,50",
+                },
+              },
+            ),
+          );
+        }
+        if (url.includes("PLLBB.aspx")) {
+          // Single peak at 37.7,-122.4 — activities summit only when
+          // their track passes through there (matched via withMatch).
+          return Promise.resolve(
+            new Response(
+              `<ts><t i="4242" a="37.7" o="-122.4" n="Test"/></ts>`,
+              {
+                status: 200,
+                headers: { "Content-Type": "application/xml" },
+              },
+            ),
+          );
+        }
+        if (url.includes("/api/v3/activities/")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ timezone: "(GMT-08:00) America/Los_Angeles" }),
+              { status: 200 },
+            ),
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+  }
+
+  beforeEach(() => {
+    storage.bag["settings"] = {
+      horizM: 75,
+      vertM: 25,
+      lookbackDays: 90,
+      blacklist: ["Yoga"],
+    };
+  });
+
+  it("stops with reason=found-pending when batch 1 yields a pending row", async () => {
+    storage.bag["activities"] = [1, 2, 3, 4, 5].map((i) => mkActivity(i));
+    setupFetchMock({ withMatch: new Set([1]) });
+
+    const res = await handleMatchBatch({ startIndex: 0, size: 20 });
+    if (!res.ok) throw new Error(`unexpected: ${(res as { error: string }).error}`);
+
+    expect(res.reason).toBe("found-pending");
+    expect(res.totalScanned).toBe(1);
+    expect(res.totalMatches).toBe(1);
+    expect(res.endIndex).toBe(1);
+  });
+
+  it("auto-continues across batches until a pending row appears", async () => {
+    storage.bag["activities"] = Array.from({ length: 30 }, (_, i) => mkActivity(i + 1));
+    setupFetchMock({ withMatch: new Set([25]) });
+
+    const res = await handleMatchBatch({ startIndex: 0, size: 10 });
+    if (!res.ok) throw new Error("unexpected");
+
+    expect(res.reason).toBe("found-pending");
+    expect(res.totalScanned).toBe(25);
+    expect(res.endIndex).toBe(25);
+  });
+
+  it("autoContinue:false stops after one inner batch with manual-stop", async () => {
+    storage.bag["activities"] = Array.from({ length: 30 }, (_, i) => mkActivity(i + 1));
+    setupFetchMock({ withMatch: new Set() });
+
+    const res = await handleMatchBatch({
+      startIndex: 0,
+      size: 10,
+      autoContinue: false,
+    });
+    if (!res.ok) throw new Error("unexpected");
+
+    expect(res.reason).toBe("manual-stop");
+    expect(res.totalScanned).toBe(10);
+  });
+
+  it("returns exhausted when we run off the end of activities", async () => {
+    storage.bag["activities"] = [1, 2, 3].map((i) => mkActivity(i));
+    setupFetchMock({ withMatch: new Set() });
+
+    const res = await handleMatchBatch({ startIndex: 0, size: 20 });
+    if (!res.ok) throw new Error("unexpected");
+
+    expect(res.reason).toBe("exhausted");
+    expect(res.totalScanned).toBe(3);
+    expect(res.endIndex).toBe(3);
+  });
+
+  it("returns rate-limited and does not cache the offending activity", async () => {
+    storage.bag["activities"] = [1, 2, 3, 4].map((i) => mkActivity(i));
+    setupFetchMock({ rateLimitAt: 3 });
+
+    const res = await handleMatchBatch({ startIndex: 0, size: 10 });
+    if (!res.ok) throw new Error("unexpected");
+
+    expect(res.reason).toBe("rate-limited");
+    // Activities 1, 2 should be cached (as no-match); activity 3 NOT cached.
+    const cache = storage.bag["activityMatches"] as Record<number, unknown>;
+    expect(cache[1]).toBeDefined();
+    expect(cache[2]).toBeDefined();
+    expect(cache[3]).toBeUndefined();
+  });
+
+  it("skips blacklisted activities without counting them toward the batch", async () => {
+    storage.bag["activities"] = [
+      mkActivity(1, "Hike"),
+      mkActivity(2, "Yoga"),
+      mkActivity(3, "Yoga"),
+      mkActivity(4, "Hike"),
+      mkActivity(5, "Hike"),
+    ];
+    setupFetchMock({ withMatch: new Set() });
+
+    const res = await handleMatchBatch({
+      startIndex: 0,
+      size: 2,
+      autoContinue: false,
+    });
+    if (!res.ok) throw new Error("unexpected");
+
+    expect(res.totalScanned).toBe(2);
+    const cache = storage.bag["activityMatches"] as Record<number, unknown>;
+    // Yoga not cached; Hikes 1 and 4 cached.
+    expect(cache[1]).toBeDefined();
+    expect(cache[2]).toBeUndefined();
+    expect(cache[3]).toBeUndefined();
+    expect(cache[4]).toBeDefined();
+  });
+
+  it("skips already-cached activities", async () => {
+    storage.bag["activities"] = [1, 2, 3, 4, 5].map((i) => mkActivity(i));
+    storage.bag["activityMatches"] = {
+      2: { peakIds: [], computedAt: 0 }, // pre-existing
+    };
+    setupFetchMock({ withMatch: new Set() });
+
+    const res = await handleMatchBatch({
+      startIndex: 0,
+      size: 20,
+      autoContinue: false,
+    });
+    if (!res.ok) throw new Error("unexpected");
+
+    expect(res.totalScanned).toBe(4); // 1, 3, 4, 5 (2 was cached)
+    const cache = storage.bag["activityMatches"] as Record<
+      number,
+      { peakIds: number[]; computedAt: number }
+    >;
+    expect(cache[2]?.computedAt).toBe(0); // untouched
+  });
+
+  it("addedPendingRow is false when all matched peaks are already in processed", async () => {
+    storage.bag["activities"] = Array.from({ length: 5 }, (_, i) => mkActivity(i + 1));
+    storage.bag["processed"] = {
+      "1:4242": { processedAt: 0, ascentId: 99 }, // already saved
+    };
+    setupFetchMock({ withMatch: new Set([1, 2]) });
+
+    const res = await handleMatchBatch({ startIndex: 0, size: 10 });
+    if (!res.ok) throw new Error("unexpected");
+
+    // Activity 1 matched but already-processed → not a pending row.
+    // Activity 2 matched and is pending → stops here.
+    expect(res.reason).toBe("found-pending");
+    expect(res.totalScanned).toBe(2);
+    expect(res.totalMatches).toBe(2);
+  });
+
+  it("writes prefillPayloads for every matched peakId", async () => {
+    storage.bag["activities"] = [mkActivity(1)];
+    setupFetchMock({ withMatch: new Set([1]) });
+
+    await handleMatchBatch({ startIndex: 0, size: 1, autoContinue: false });
+
+    const payloads = storage.bag["prefillPayloads"] as Record<string, unknown>;
+    expect(payloads["1:4242"]).toBeDefined();
+  });
+
+  it("emits matchBatch:item events with cumulative totalScanned", async () => {
+    storage.bag["activities"] = [1, 2, 3].map((i) => mkActivity(i));
+    setupFetchMock({ withMatch: new Set() });
+
+    await handleMatchBatch({ startIndex: 0, size: 10 });
+
+    const items = storage.messages.filter(
+      (m: unknown): m is { type: string; totalScanned: number } =>
+        typeof m === "object" &&
+        m !== null &&
+        (m as { type?: string }).type === "matchBatch:item",
+    );
+    expect(items).toHaveLength(3);
+    expect(items[0]?.totalScanned).toBe(1);
+    expect(items[1]?.totalScanned).toBe(2);
+    expect(items[2]?.totalScanned).toBe(3);
+
+    const done = storage.messages.find(
+      (m: unknown) =>
+        typeof m === "object" &&
+        m !== null &&
+        (m as { type?: string }).type === "matchBatch:done",
+    );
+    expect(done).toBeDefined();
   });
 });
