@@ -99,13 +99,18 @@ describe("handleGetActivities", () => {
     expect(res).toEqual({ ok: true, activities: [] });
   });
 
-  it("returns cached activities tagged as unmatched when no match cache", async () => {
+  it("filters unmatched activities from the default view (only pending shows)", async () => {
     storage.bag["activities"] = [FAKE_ACTIVITY];
     const res = await handleGetActivities();
-    expect(res).toEqual({
-      ok: true,
-      activities: [{ ...FAKE_ACTIVITY, state: "unmatched" }],
-    });
+    expect(res).toEqual({ ok: true, activities: [] });
+  });
+
+  it("returns unmatched activities under showHidden=true for inspection", async () => {
+    storage.bag["activities"] = [FAKE_ACTIVITY];
+    const res = await handleGetActivities(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.activities).toHaveLength(1);
+    expect(res.activities[0]?.state).toBe("unmatched");
   });
 
   it("filters out done activities by default", async () => {

@@ -202,18 +202,18 @@ export async function handleGetActivities(
       };
     });
 
-    // Default view filters out done, hidden, and no-match
-    // activities — only actionable pending rows surface. As ascents
-    // get saved, activities transition to done and drop out of the
-    // list. Show hidden reveals all states for recovery.
+    // Default view shows ONLY pending activities — the actionable
+    // ones (matched, at least one peak un-saved). Every other
+    // state filters out:
+    //   - unmatched: not yet processed by the matcher; no match
+    //     data to act on.
+    //   - no-match: tried, no peaks found.
+    //   - done: all peaks saved.
+    //   - hidden: user-dismissed.
+    // Show hidden reveals everything for recovery.
     const filtered = showHidden
       ? enriched
-      : enriched.filter(
-          (a) =>
-            a.state !== "done" &&
-            a.state !== "hidden" &&
-            a.state !== "no-match",
-        );
+      : enriched.filter((a) => a.state === "pending");
     return { ok: true, activities: filtered };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
