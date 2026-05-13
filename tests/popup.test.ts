@@ -124,7 +124,7 @@ describe("popup init — activity list rendering", () => {
 
     const rows = document.querySelectorAll(".activity");
     expect(rows).toHaveLength(2);
-    const openBtns = document.querySelectorAll(".open-btn");
+    const openBtns = document.querySelectorAll(".log-btn");
     expect((openBtns[0] as HTMLButtonElement).dataset["stravaId"]).toBe("101");
     expect((openBtns[1] as HTMLButtonElement).dataset["stravaId"]).toBe("102");
     expect(rows[0]!.textContent).toContain("2026-05-08");
@@ -192,8 +192,8 @@ describe("popup — Open button", () => {
   });
 
   function clickOpen(): HTMLButtonElement {
-    const btn = document.querySelector<HTMLButtonElement>(".open-btn");
-    if (!btn) throw new Error("no .open-btn");
+    const btn = document.querySelector<HTMLButtonElement>(".log-btn");
+    if (!btn) throw new Error("no .log-btn");
     btn.click();
     return btn;
   }
@@ -202,14 +202,14 @@ describe("popup — Open button", () => {
     return document.querySelector(".row-status")?.textContent ?? "";
   }
 
-  it("sends processActivity with the stravaId from data-strava-id", async () => {
+  it("sends logAscents with the stravaId from data-strava-id", async () => {
     sendMessage.mockResolvedValueOnce({ ok: true, openedCount: 2 });
     clickOpen();
     await flushAsync();
     await flushAsync();
 
     expect(sendMessage).toHaveBeenCalledWith({
-      type: "processActivity",
+      type: "logAscents",
       stravaId: 101,
     });
   });
@@ -232,7 +232,7 @@ describe("popup — Open button", () => {
     expect(rowStatus()).toContain("No peak matches");
   });
 
-  it("shows the error message when processActivity returns ok:false", async () => {
+  it("shows the error message when logAscents returns ok:false", async () => {
     sendMessage.mockResolvedValueOnce({
       ok: false,
       error: "Activity not in cache — click Refresh first",
@@ -294,7 +294,7 @@ describe("popup — idempotency UI", () => {
 
     expect(document.querySelector(".activity.done")).not.toBeNull();
     expect(document.querySelector(".unhide-btn")).not.toBeNull();
-    expect(document.querySelector(".open-btn")).toBeNull();
+    expect(document.querySelector(".log-btn")).toBeNull();
   });
 
   it("unmatched and pending rows have a Hide button", async () => {
@@ -425,7 +425,7 @@ describe("popup — idempotency UI", () => {
       totalMatches: 2,
     });
 
-    const openBtn = document.querySelector<HTMLButtonElement>(".open-btn")!;
+    const openBtn = document.querySelector<HTMLButtonElement>(".log-btn")!;
     openBtn.click();
     await flushAsync();
     await flushAsync();
@@ -483,7 +483,7 @@ describe("popup — idempotency UI", () => {
       error: `Strava rate limit reached; retry after ${iso}`,
     });
 
-    const openBtn = document.querySelector<HTMLButtonElement>(".open-btn")!;
+    const openBtn = document.querySelector<HTMLButtonElement>(".log-btn")!;
     openBtn.click();
     await flushAsync();
     await flushAsync();

@@ -305,10 +305,10 @@ function buildRow(activity: EnrichedActivity): HTMLLIElement {
   `;
 
   const rowStatus = li.querySelector<HTMLElement>(".row-status")!;
-  const openBtn = li.querySelector<HTMLButtonElement>(".open-btn");
-  if (openBtn) {
-    openBtn.addEventListener("click", () => {
-      void handleOpen(activity.id, openBtn, rowStatus);
+  const logBtn = li.querySelector<HTMLButtonElement>(".log-btn");
+  if (logBtn) {
+    logBtn.addEventListener("click", () => {
+      void handleLog(activity.id, logBtn, rowStatus);
     });
   }
   const hideBtn = li.querySelector<HTMLButtonElement>(".hide-btn");
@@ -339,7 +339,7 @@ function renderActionButtons(activity: EnrichedActivity): string {
   }
   // unmatched OR pending
   return `
-    <button class="open-btn" type="button" data-strava-id="${activity.id}">Open</button>
+    <button class="log-btn" type="button" data-strava-id="${activity.id}">Log ascents</button>
     <button class="hide-btn" type="button" data-strava-id="${activity.id}">Hide</button>
   `;
 }
@@ -383,7 +383,7 @@ async function handleRefresh(): Promise<void> {
   }
 }
 
-async function handleOpen(
+async function handleLog(
   stravaId: number,
   btn: HTMLButtonElement,
   rowStatus: HTMLElement,
@@ -392,7 +392,7 @@ async function handleOpen(
   rowStatus.textContent = "Opening…";
 
   try {
-    const res = await send({ type: "processActivity", stravaId });
+    const res = await send({ type: "logAscents", stravaId });
     if (!res.ok) {
       rowStatus.textContent = friendlyError(res.error);
     } else if ((res.openedCount ?? 0) === 0) {
