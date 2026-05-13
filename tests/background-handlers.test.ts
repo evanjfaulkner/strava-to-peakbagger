@@ -24,6 +24,7 @@ let handleMarkActivityUnhidden: typeof import("../entrypoints/background").handl
 let handleHideAllVisible: typeof import("../entrypoints/background").handleHideAllVisible;
 let handleGetTabMapping: typeof import("../entrypoints/background").handleGetTabMapping;
 let handleMatchBatch: typeof import("../entrypoints/background").handleMatchBatch;
+let handleLogAscents: typeof import("../entrypoints/background").handleLogAscents;
 let runWatchdog: typeof import("../entrypoints/background").runWatchdog;
 
 beforeAll(async () => {
@@ -37,6 +38,7 @@ beforeAll(async () => {
   handleHideAllVisible = mod.handleHideAllVisible;
   handleGetTabMapping = mod.handleGetTabMapping;
   handleMatchBatch = mod.handleMatchBatch;
+  handleLogAscents = mod.handleLogAscents;
   runWatchdog = mod.runWatchdog;
 });
 
@@ -1005,5 +1007,110 @@ describe("handleMatchBatch", () => {
         (m as { type?: string }).type === "matchBatch:done",
     );
     expect(done).toBeDefined();
+  });
+});
+
+describe("handleLogAscents", () => {
+  beforeEach(() => {
+    storage.bag["pb"] = { climberId: 99 };
+  });
+
+  it("rejects an invalid stravaId", async () => {
+    const res = await handleLogAscents(Number("nope"));
+    expect(res.ok).toBe(false);
+  });
+
+  it("surfaces missing cid", async () => {
+    storage.bag["pb"] = {};
+    const res = await handleLogAscents(12345);
+    expect(res.ok).toBe(false);
+    expect((res as { error: string }).error).toMatch(/climber ID/);
+    expect(storage.tabsCreated).toEqual([]);
+  });
+
+  it('returns "No matches cached" when activityMatches absent', async () => {
+    const res = await handleLogAscents(12345);
+    expect(res.ok).toBe(false);
+    expect((res as { error: string }).error).toMatch(/No matches cached/);
+  });
+
+  it('returns "No matches cached" when peakIds is empty', async () => {
+    storage.bag["activityMatches"] = {
+      12345: { peakIds: [], computedAt: 0 },
+    };
+    const res = await handleLogAscents(12345);
+    expect(res.ok).toBe(false);
+    expect((res as { error: string }).error).toMatch(/No matches cached/);
+  });
+
+  it("returns openedCount=0 when all peakIds already processed", async () => {
+    storage.bag["activityMatches"] = {
+      12345: { peakIds: [1, 2], computedAt: 0 },
+    };
+    storage.bag["processed"] = {
+      "12345:1": { processedAt: 0, ascentId: 11 },
+      "12345:2": { processedAt: 0, ascentId: 22 },
+    };
+    const res = await handleLogAscents(12345);
+    expect(res.ok).toBe(true);
+    expect((res as { openedCount: number }).openedCount).toBe(0);
+    expect((res as { totalMatches: number }).totalMatches).toBe(2);
+    expect(storage.tabsCreated).toEqual([]);
+  });
+
+  it("opens one tab per unprocessed peakId with the correct URL", async () => {
+    storage.bag["activityMatches"] = {
+      12345: { peakIds: [1, 2, 3], computedAt: 0 },
+    };
+    storage.bag["processed"] = {
+      "12345:1": { processedAt: 0, ascentId: 7 }, // 1 already saved
+    };
+    storage.bag["prefillPayloads"] = {
+      "12345:2": { pid: 2 } as never,
+      "12345:3": { pid: 3 } as never,
+    };
+
+    const res = await handleLogAscents(12345);
+    expect(res.ok).toBe(true);
+    expect((res as { openedCount: number }).openedCount).toBe(2);
+    expect(storage.tabsCreated).toHaveLength(2);
+    for (const t of storage.tabsCreated) {
+      expect(t.url).toMatch(
+        /^https:\/\/www\.peakbagger\.com\/climber\/ascentedit\.aspx\?pid=\d+&cid=99#s2p=12345$/,
+      );
+    }
+  });
+
+  it("warns and continues when a prefill payload is missing", async () => {
+    storage.bag["activityMatches"] = {
+      12345: { peakIds: [1, 2], computedAt: 0 },
+    };
+    storage.bag["prefillPayloads"] = {
+      "12345:2": { pid: 2 } as never,
+      // 12345:1 deliberately absent
+    };
+
+    const res = await handleLogAscents(12345);
+    expect(res.ok).toBe(true);
+    expect((res as { openedCount: number }).openedCount).toBe(1);
+    expect(storage.tabsCreated).toHaveLength(1);
+    expect(storage.tabsCreated[0]?.url).toContain("pid=2");
+  });
+
+  it("records pendingTabSaves for each opened tab", async () => {
+    storage.bag["activityMatches"] = {
+      12345: { peakIds: [10], computedAt: 0 },
+    };
+    storage.bag["prefillPayloads"] = {
+      "12345:10": { pid: 10 } as never,
+    };
+
+    await handleLogAscents(12345);
+
+    const pending = storage.sessionBag["pendingTabSaves"] as Record<
+      number,
+      { stravaId: number; peakId: number }
+    >;
+    expect(pending[1]).toEqual({ stravaId: 12345, peakId: 10 });
   });
 });

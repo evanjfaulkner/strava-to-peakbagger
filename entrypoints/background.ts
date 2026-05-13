@@ -430,6 +430,79 @@ export async function handleMatchBatch(
   }
 }
 
+export async function handleLogAscents(
+  stravaId: number,
+): Promise<Resp<{ openedCount: number; totalMatches: number }>> {
+  try {
+    if (!Number.isFinite(stravaId) || stravaId <= 0) {
+      return { ok: false, error: "Invalid stravaId" };
+    }
+    const cid = await getClimberId();
+    if (cid === undefined) {
+      return {
+        ok: false,
+        error:
+          "Peakbagger climber ID not set — open the Options page and enter your cid first",
+      };
+    }
+
+    const cache = (await get("activityMatches")) ?? {};
+    const entry = cache[stravaId];
+    if (!entry || entry.peakIds.length === 0) {
+      return {
+        ok: false,
+        error: "No matches cached — refresh the popup first",
+      };
+    }
+
+    const processed = (await get("processed")) ?? {};
+    const unprocessed = entry.peakIds.filter(
+      (pid) => !processed[`${stravaId}:${pid}`],
+    );
+    if (unprocessed.length === 0) {
+      return {
+        ok: true,
+        openedCount: 0,
+        totalMatches: entry.peakIds.length,
+      };
+    }
+
+    const payloads = (await get("prefillPayloads")) ?? {};
+    const sessionPending = await getPendingTabSaves();
+    let openedCount = 0;
+    for (const peakId of unprocessed) {
+      const key = `${stravaId}:${peakId}`;
+      if (!payloads[key]) {
+        void log("warn", "logAscents: prefill payload missing", {
+          stravaId,
+          peakId,
+        });
+        continue;
+      }
+      const url = `${PEAKBAGGER_ASCENT_URL}?pid=${peakId}&cid=${cid}#s2p=${stravaId}`;
+      const tab = await chrome.tabs.create({ url, active: false });
+      if (tab.id !== undefined) {
+        sessionPending[tab.id] = { stravaId, peakId };
+      }
+      openedCount++;
+    }
+    await setPendingTabSaves(sessionPending);
+
+    void log("info", "Logged ascents (v0.2)", {
+      stravaId,
+      openedCount,
+      totalMatches: entry.peakIds.length,
+    });
+    return {
+      ok: true,
+      openedCount,
+      totalMatches: entry.peakIds.length,
+    };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
 export async function handleProcessActivity(
   stravaId: number,
 ): Promise<Resp<{ openedCount: number; totalMatches: number }>> {
@@ -749,6 +822,15 @@ export default defineBackground(() => {
         size: Number(msg?.size ?? 20),
         autoContinue: msg?.autoContinue !== false,
       })
+        .then(sendResponse)
+        .catch((e: unknown) =>
+          sendResponse({ ok: false, error: errMessage(e) }),
+        );
+      return true;
+    }
+    if (type === "logAscents") {
+      const stravaId = Number(msg?.stravaId);
+      void handleLogAscents(stravaId)
         .then(sendResponse)
         .catch((e: unknown) =>
           sendResponse({ ok: false, error: errMessage(e) }),
