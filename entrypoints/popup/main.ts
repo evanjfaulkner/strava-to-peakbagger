@@ -169,8 +169,10 @@ async function handleBatchItem(msg: unknown): Promise<void> {
   sessionScanned += 1;
   if ((m.peakCount ?? 0) > 0) sessionMatches += 1;
   updateProgressDisplay();
-  if (m.addedPendingRow) {
-    // Cheap to refetch — popup activity list is small.
+  // Re-render whenever any match is found (pending OR done). The
+  // default-view filter passes done activities through so the user
+  // sees them surfacing in real time.
+  if ((m.peakCount ?? 0) > 0) {
     await renderActivities();
   }
 }
@@ -327,15 +329,27 @@ function buildRow(activity: EnrichedActivity): HTMLLIElement {
 }
 
 function renderBadge(activity: EnrichedActivity): string {
-  if (activity.state !== "pending") return "";
-  const total = activity.matchedPeakIds?.length ?? 0;
-  const done = activity.processedPeakIds?.length ?? 0;
-  return `<span class="match-badge">${done}/${total} saved</span>`;
+  if (activity.state === "pending") {
+    const total = activity.matchedPeakIds?.length ?? 0;
+    const done = activity.processedPeakIds?.length ?? 0;
+    return `<span class="match-badge">${done}/${total} saved</span>`;
+  }
+  if (activity.state === "done") {
+    const total = activity.matchedPeakIds?.length ?? 0;
+    return `<span class="match-badge done">${total}/${total} saved</span>`;
+  }
+  return "";
 }
 
 function renderActionButtons(activity: EnrichedActivity): string {
-  if (activity.state === "done" || activity.state === "hidden") {
+  if (activity.state === "hidden") {
     return `<button class="unhide-btn" type="button" data-strava-id="${activity.id}">Unhide</button>`;
+  }
+  if (activity.state === "done") {
+    // Done activities show in the default view (so the user sees
+    // what's been logged) but get a Hide button to clear them once
+    // they're not interesting anymore.
+    return `<button class="hide-btn" type="button" data-strava-id="${activity.id}">Hide</button>`;
   }
   // unmatched OR pending
   return `

@@ -108,7 +108,7 @@ describe("handleGetActivities", () => {
     });
   });
 
-  it("filters out done activities by default", async () => {
+  it("keeps done activities visible in the default view (v0.2.1)", async () => {
     const otherActivity = { ...FAKE_ACTIVITY, id: 222, name: "Pending Hike" };
     storage.bag["activities"] = [FAKE_ACTIVITY, otherActivity];
     storage.bag["activityMatches"] = {
@@ -124,11 +124,21 @@ describe("handleGetActivities", () => {
     const res = await handleGetActivities();
     if (!res.ok) throw new Error("expected ok");
 
-    const ids = res.activities.map((a) => a.id);
-    expect(ids).toEqual([222]); // only the pending one
-    expect(res.activities[0]?.state).toBe("pending");
-    expect(res.activities[0]?.processedPeakIds).toEqual([10]);
-    expect(res.activities[0]?.matchedPeakIds).toEqual([10, 11]);
+    // v0.2.1: done is no longer filtered from the default view —
+    // both activities show. The pending one shows as "pending",
+    // the fully-saved one as "done".
+    const byId = new Map(res.activities.map((a) => [a.id, a.state]));
+    expect(byId.get(FAKE_ACTIVITY.id)).toBe("done");
+    expect(byId.get(222)).toBe("pending");
+  });
+
+  it("still filters hidden activities from the default view", async () => {
+    storage.bag["activities"] = [FAKE_ACTIVITY];
+    storage.bag["hiddenActivities"] = { [FAKE_ACTIVITY.id]: { hiddenAt: 1 } };
+
+    const res = await handleGetActivities();
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.activities).toHaveLength(0);
   });
 
   it("with showHidden=true returns done activities too", async () => {
@@ -972,7 +982,7 @@ describe("handleMatchBatch", () => {
     expect(cache[2]?.computedAt).toBe(0); // untouched
   });
 
-  it("addedPendingRow is false when all matched peaks are already in processed", async () => {
+  it("auto-continue stops on any match, including already-processed (v0.2.1)", async () => {
     storage.bag["activities"] = Array.from({ length: 5 }, (_, i) => mkActivity(i + 1));
     storage.bag["processed"] = {
       "1:4242": { processedAt: 0, ascentId: 99 }, // already saved
@@ -982,11 +992,12 @@ describe("handleMatchBatch", () => {
     const res = await handleMatchBatch({ startIndex: 0, size: 10 });
     if (!res.ok) throw new Error("unexpected");
 
-    // Activity 1 matched but already-processed → not a pending row.
-    // Activity 2 matched and is pending → stops here.
+    // v0.2.1: stop on ANY match, even if all peaks are already-
+    // processed. Activity 1 matches → addedPendingRow=false but
+    // peakCount=1 → loop stops here.
     expect(res.reason).toBe("found-pending");
-    expect(res.totalScanned).toBe(2);
-    expect(res.totalMatches).toBe(2);
+    expect(res.totalScanned).toBe(1);
+    expect(res.totalMatches).toBe(1);
   });
 
   it("writes prefillPayloads for every matched peakId", async () => {

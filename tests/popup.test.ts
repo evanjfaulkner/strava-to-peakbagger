@@ -37,7 +37,7 @@ function makeActivity(
   sportType: string,
   name: string,
   extras: {
-    state?: "unmatched" | "pending" | "done";
+    state?: "unmatched" | "no-match" | "pending" | "done" | "hidden";
     matchedPeakIds?: number[];
     processedPeakIds?: number[];
   } = {},
@@ -278,7 +278,7 @@ describe("popup — idempotency UI", () => {
     expect(badge?.textContent ?? "").toMatch(/1\s*\/\s*3/);
   });
 
-  it('done rows render an "Unhide" button instead of "Open"', async () => {
+  it('done rows render with a green badge + Hide button (visible in default view)', async () => {
     sendMessage.mockResolvedValue({
       ok: true,
       activities: [
@@ -293,8 +293,12 @@ describe("popup — idempotency UI", () => {
     await init();
 
     expect(document.querySelector(".activity.done")).not.toBeNull();
-    expect(document.querySelector(".unhide-btn")).not.toBeNull();
+    expect(document.querySelector(".match-badge.done")).not.toBeNull();
+    expect(document.querySelector(".hide-btn")).not.toBeNull();
+    // Done rows in v0.2.1 do NOT have Log ascents (already saved)
+    // nor Unhide (not hidden).
     expect(document.querySelector(".log-btn")).toBeNull();
+    expect(document.querySelector(".unhide-btn")).toBeNull();
   });
 
   it("unmatched and pending rows have a Hide button", async () => {
@@ -381,9 +385,9 @@ describe("popup — idempotency UI", () => {
       ok: true,
       activities: [
         makeActivity(101, "2026-05-08T17:00:00Z", "Hike", "D", {
-          state: "done",
+          state: "hidden",
           matchedPeakIds: [1],
-          processedPeakIds: [1],
+          processedPeakIds: [],
         }),
       ],
     });

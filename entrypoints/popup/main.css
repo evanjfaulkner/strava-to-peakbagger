@@ -190,6 +190,11 @@ button:disabled {
   letter-spacing: normal;
 }
 
+.match-badge.done {
+  background: #d1fae5;
+  color: #065f46;
+}
+
 .activity.done {
   opacity: 0.55;
 }

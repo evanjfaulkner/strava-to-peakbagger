@@ -202,13 +202,14 @@ export async function handleGetActivities(
       };
     });
 
+    // Default view filters out hidden and no-match activities, but
+    // keeps done ones visible so the user can see what's been
+    // saved without flipping the Show hidden toggle. Matched
+    // activities that are fully done get a Hide button to clean up.
     const filtered = showHidden
       ? enriched
       : enriched.filter(
-          (a) =>
-            a.state !== "done" &&
-            a.state !== "hidden" &&
-            a.state !== "no-match",
+          (a) => a.state !== "hidden" && a.state !== "no-match",
         );
     return { ok: true, activities: filtered };
   } catch (e) {
@@ -396,7 +397,10 @@ export async function handleMatchBatch(
           totalScanned,
         });
 
-        if (addedPendingRow) {
+        // Stop on any match (pending OR done), so the user sees
+        // results as soon as anything surfaces. Saves API budget
+        // vs. continuing to scan for pending-specifically.
+        if (peakCount > 0) {
           reason = "found-pending";
           break outer;
         }
