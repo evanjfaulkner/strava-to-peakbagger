@@ -1,3 +1,4 @@
+import { log } from "./log";
 import {
   clearStravaTokens,
   get,
@@ -91,6 +92,14 @@ export async function connectStrava(): Promise<ConnectResult> {
     athleteLastname: tokens.athlete.lastname,
   });
 
+  void log("info", "Connected to Strava", {
+    athleteId: tokens.athlete.id,
+    name:
+      [tokens.athlete.firstname, tokens.athlete.lastname]
+        .filter(Boolean)
+        .join(" ") || undefined,
+  });
+
   return {
     athleteId: tokens.athlete.id,
     firstname: tokens.athlete.firstname ?? "",
@@ -125,6 +134,9 @@ export async function getValidAccessToken(): Promise<string> {
   } catch (e) {
     if (e instanceof TokenHTTPError && (e.status === 400 || e.status === 401)) {
       await clearStravaTokens();
+      void log("error", "Strava refresh token invalid; cleared tokens", {
+        status: e.status,
+      });
       throw new Error(
         "Strava refresh token is invalid — please reconnect on the Options page",
       );

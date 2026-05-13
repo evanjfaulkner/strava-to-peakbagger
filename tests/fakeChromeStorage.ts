@@ -91,9 +91,23 @@ export function installFakeChromeStorage(initial: Bag = {}): FakeChrome {
         tabsCreated.push(options);
         return { id: tabsCreated.length };
       },
+      async query(_filter: unknown) {
+        // Test default: every tab we've created is "open".
+        return tabsCreated.map((_, i) => ({ id: i + 1 }));
+      },
       onRemoved: {
         addListener: (_cb: (tabId: number) => void) => {
           /* no-op stub for tests */
+        },
+      },
+    },
+    alarms: {
+      create: (_name: string, _options: unknown) => {
+        /* no-op */
+      },
+      onAlarm: {
+        addListener: (_cb: (alarm: { name: string }) => void) => {
+          /* no-op */
         },
       },
     },

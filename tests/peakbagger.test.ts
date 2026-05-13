@@ -9,6 +9,7 @@ import {
 import {
   PLLBB_URL,
   TILE_TTL_MS,
+  _resetTokenBucketForTesting,
   bboxForTileKey,
   expandBbox,
   parsePllbbXml,
@@ -46,6 +47,7 @@ let storage: ReturnType<typeof installFakeChromeStorage>;
 
 beforeEach(() => {
   storage = installFakeChromeStorage();
+  _resetTokenBucketForTesting();
 });
 
 afterEach(() => {

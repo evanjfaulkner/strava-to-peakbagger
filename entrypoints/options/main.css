@@ -141,6 +141,46 @@ button[type="submit"]:hover,
   margin: 0;
 }
 
+#log-section {
+  margin-top: 24px;
+}
+
+.log-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.log-actions button {
+  padding: 4px 10px;
+  border: 1px solid #d1d5db;
+  background: white;
+  color: #2563eb;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.log-actions button:hover {
+  background: #f3f4f6;
+}
+
+#log-view {
+  margin: 0;
+  padding: 8px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #1f2937;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 #status {
   margin: 0;
   font-size: 12px;

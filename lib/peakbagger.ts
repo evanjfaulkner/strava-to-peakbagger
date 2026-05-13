@@ -9,6 +9,41 @@ export const USER_AGENT =
   "strava-to-peakbagger/0.1 (+https://github.com/evanjfaulkner/strava-to-peakbagger)";
 const METERS_PER_DEG_LAT = 111_000;
 
+// Conservative in-memory token bucket. Peakbagger doesn't publish
+// rate limits; ~30 req/min keeps a cold first-run polite without
+// being slow in practice (typical activity bbox is 1–4 tiles).
+const RATE_LIMIT_PER_MIN = 30;
+const bucket: { lastRefillMs: number; tokens: number } = {
+  lastRefillMs: 0,
+  tokens: RATE_LIMIT_PER_MIN,
+};
+
+async function acquireToken(): Promise<void> {
+  const now = Date.now();
+  if (bucket.lastRefillMs === 0) bucket.lastRefillMs = now;
+  const elapsed = now - bucket.lastRefillMs;
+  bucket.tokens = Math.min(
+    RATE_LIMIT_PER_MIN,
+    bucket.tokens + (elapsed / 60_000) * RATE_LIMIT_PER_MIN,
+  );
+  bucket.lastRefillMs = now;
+  if (bucket.tokens < 1) {
+    const waitMs = ((1 - bucket.tokens) / RATE_LIMIT_PER_MIN) * 60_000;
+    await new Promise((r) => setTimeout(r, waitMs));
+    bucket.tokens = 0;
+    bucket.lastRefillMs = Date.now();
+  } else {
+    bucket.tokens -= 1;
+  }
+}
+
+// Test-only: reset the token bucket so cross-test state doesn't
+// cause slow runs when a previous test exhausted tokens.
+export function _resetTokenBucketForTesting(): void {
+  bucket.tokens = RATE_LIMIT_PER_MIN;
+  bucket.lastRefillMs = 0;
+}
+
 export type Bbox = {
   minLat: number;
   maxLat: number;
@@ -66,6 +101,7 @@ export function parsePllbbXml(xml: string): Peak[] {
 }
 
 export async function peaksInBbox(bbox: Bbox): Promise<Peak[]> {
+  await acquireToken();
   const params = new URLSearchParams({
     miny: String(bbox.minLat),
     maxy: String(bbox.maxLat),

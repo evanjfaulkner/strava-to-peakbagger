@@ -1,4 +1,5 @@
 import KDBush from "kdbush";
+import { log } from "../lib/log";
 import { matchSummits } from "../lib/matcher";
 import { peaksForTrack } from "../lib/peakbagger";
 import { buildPrefill } from "../lib/prefill";
@@ -66,6 +67,67 @@ export async function handleGetTabMapping(
   } catch (e) {
     return { ok: false, error: errMessage(e) };
   }
+}
+
+// ============================================================
+// Watchdog — periodic cleanup of stale state
+// ============================================================
+//
+// Two sweeps:
+// 1. pendingTabSaves (session-storage): tabs.onRemoved already drops
+//    entries when the user closes a tab. The watchdog catches
+//    anything orphaned by SW restarts or other edge cases.
+// 2. prefillPayloads (local): payload entries whose (stravaId,
+//    peakId) is already in processed are dead weight. Removing them
+//    keeps quota usage sane long-term.
+
+export async function runWatchdog(): Promise<{
+  staleTabSavesRemoved: number;
+  staleProgressRemoved: number;
+}> {
+  let staleTabSavesRemoved = 0;
+  let staleProgressRemoved = 0;
+  try {
+    // Sweep pendingTabSaves vs currently-open tabs.
+    const pending = await getPendingTabSaves();
+    const openTabs = await chrome.tabs.query({});
+    const openIds = new Set(
+      openTabs.map((t) => t.id).filter((id): id is number => id !== undefined),
+    );
+    const updated: Record<number, TabMapping> = {};
+    for (const [tabIdStr, mapping] of Object.entries(pending)) {
+      const tabId = Number(tabIdStr);
+      if (openIds.has(tabId)) {
+        updated[tabId] = mapping;
+      } else {
+        staleTabSavesRemoved++;
+      }
+    }
+    if (staleTabSavesRemoved > 0) await setPendingTabSaves(updated);
+
+    // Sweep prefillPayloads vs processed.
+    const payloads = (await get("prefillPayloads")) ?? {};
+    const processed = (await get("processed")) ?? {};
+    const trimmed: Record<string, PrefillPayload> = {};
+    for (const [key, payload] of Object.entries(payloads)) {
+      if (processed[key]) {
+        staleProgressRemoved++;
+      } else {
+        trimmed[key] = payload;
+      }
+    }
+    if (staleProgressRemoved > 0) await set("prefillPayloads", trimmed);
+
+    if (staleTabSavesRemoved > 0 || staleProgressRemoved > 0) {
+      void log("info", "Watchdog swept stale state", {
+        staleTabSavesRemoved,
+        staleProgressRemoved,
+      });
+    }
+  } catch (e) {
+    void log("error", "Watchdog failed", { error: errMessage(e) });
+  }
+  return { staleTabSavesRemoved, staleProgressRemoved };
 }
 
 // ============================================================
@@ -206,12 +268,22 @@ export async function handleProcessActivity(
     }
     await setPendingTabSaves(sessionPending);
 
+    void log("info", "Processed activity", {
+      stravaId,
+      activityName: activity.name,
+      matches: matches.length,
+      opened: unprocessedMatches.length,
+    });
     return {
       ok: true,
       openedCount: unprocessedMatches.length,
       totalMatches: matches.length,
     };
   } catch (e) {
+    void log("error", "processActivity failed", {
+      stravaId,
+      error: errMessage(e),
+    });
     return { ok: false, error: errMessage(e) };
   }
 }
@@ -244,9 +316,7 @@ export async function handleAscentSaved(msg: {
     };
     await set("processed", processed);
 
-    console.log(
-      `[s2p] ascent-saved recorded: ${stravaId}:${peakId} ascentId=${ascentId ?? "<null>"}`,
-    );
+    void log("info", "Saved ascent", { stravaId, peakId, ascentId });
     return { ok: true };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
@@ -473,6 +543,14 @@ export default defineBackground(() => {
     })();
   });
 
+  // Periodic watchdog. Top-level registration so Chrome can wake the
+  // SW for it after a sleep.
+  chrome.alarms.create("s2p-watchdog", { periodInMinutes: 60 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name !== "s2p-watchdog") return;
+    void runWatchdog();
+  });
+
   (
     globalThis as unknown as {
       s2p: {
@@ -480,6 +558,10 @@ export default defineBackground(() => {
         devPeaks: (activityId: number) => Promise<number>;
         devMatch: (activityId: number) => Promise<number>;
         devNearest: (activityId: number, n?: number) => Promise<number>;
+        runWatchdog: () => Promise<{
+          staleTabSavesRemoved: number;
+          staleProgressRemoved: number;
+        }>;
       };
     }
   ).s2p = {
@@ -487,6 +569,7 @@ export default defineBackground(() => {
     devPeaks: handleDevPeaks,
     devMatch: handleDevMatch,
     devNearest: handleDevNearest,
+    runWatchdog,
   };
 });
 

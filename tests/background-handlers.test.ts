@@ -22,6 +22,7 @@ let handleAscentSaved: typeof import("../entrypoints/background").handleAscentSa
 let handleMarkActivityHidden: typeof import("../entrypoints/background").handleMarkActivityHidden;
 let handleMarkActivityUnhidden: typeof import("../entrypoints/background").handleMarkActivityUnhidden;
 let handleGetTabMapping: typeof import("../entrypoints/background").handleGetTabMapping;
+let runWatchdog: typeof import("../entrypoints/background").runWatchdog;
 
 beforeAll(async () => {
   const mod = await import("../entrypoints/background");
@@ -32,6 +33,7 @@ beforeAll(async () => {
   handleMarkActivityHidden = mod.handleMarkActivityHidden;
   handleMarkActivityUnhidden = mod.handleMarkActivityUnhidden;
   handleGetTabMapping = mod.handleGetTabMapping;
+  runWatchdog = mod.runWatchdog;
 });
 
 const FAR_FUTURE = 9_999_999_999;
@@ -48,7 +50,7 @@ const FAKE_ACTIVITY: ActivitySummary = {
 
 let storage: ReturnType<typeof installFakeChromeStorage>;
 
-beforeEach(() => {
+beforeEach(async () => {
   storage = installFakeChromeStorage();
   // Seed valid Strava tokens so getValidAccessToken short-circuits
   // without network during processActivity tests.
@@ -60,6 +62,10 @@ beforeEach(() => {
     expiresAt: FAR_FUTURE,
     athleteId: 1,
   };
+  // Peakbagger uses an in-memory token bucket that's module-scoped;
+  // reset between tests so cross-test state doesn't trigger waits.
+  const { _resetTokenBucketForTesting } = await import("../lib/peakbagger");
+  _resetTokenBucketForTesting();
 });
 
 afterEach(() => {
@@ -554,5 +560,49 @@ describe("processActivity — pendingTabSaves write", () => {
     >;
     // tabsCreated.length === 1 → fake-chrome assigned tab id 1.
     expect(pending[1]).toEqual({ stravaId: 12345678901, peakId: 4242 });
+  });
+});
+
+describe("runWatchdog", () => {
+  it("removes pendingTabSaves entries for tabs no longer open", async () => {
+    storage.sessionBag["pendingTabSaves"] = {
+      1: { stravaId: 100, peakId: 10 },
+      2: { stravaId: 200, peakId: 20 },
+      3: { stravaId: 300, peakId: 30 },
+    };
+    // Override chrome.tabs.query to return only tabs 1 and 3.
+    (globalThis as unknown as {
+      chrome: { tabs: { query: () => Promise<unknown[]> } };
+    }).chrome.tabs.query = async () => [{ id: 1 }, { id: 3 }];
+
+    const res = await runWatchdog();
+
+    expect(res.staleTabSavesRemoved).toBe(1);
+    const pending = storage.sessionBag["pendingTabSaves"] as Record<
+      number,
+      unknown
+    >;
+    expect(Object.keys(pending).sort()).toEqual(["1", "3"]);
+  });
+
+  it("deletes prefillPayloads keys already in processed", async () => {
+    storage.bag["prefillPayloads"] = {
+      "1:10": { pid: 10 } as never,
+      "2:20": { pid: 20 } as never,
+      "3:30": { pid: 30 } as never,
+    };
+    storage.bag["processed"] = {
+      "1:10": { processedAt: 1, ascentId: 99 },
+      "3:30": { processedAt: 2, ascentId: null },
+    };
+
+    const res = await runWatchdog();
+
+    expect(res.staleProgressRemoved).toBe(2);
+    const remaining = storage.bag["prefillPayloads"] as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(remaining)).toEqual(["2:20"]);
   });
 });

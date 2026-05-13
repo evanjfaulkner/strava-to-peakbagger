@@ -160,7 +160,7 @@ async function handleOpen(
   try {
     const res = await send({ type: "processActivity", stravaId });
     if (!res.ok) {
-      rowStatus.textContent = res.error;
+      rowStatus.textContent = friendlyError(res.error);
     } else if ((res.openedCount ?? 0) === 0) {
       if ((res.totalMatches ?? 0) === 0) {
         rowStatus.textContent = "No peak matches";
@@ -174,6 +174,21 @@ async function handleOpen(
   } finally {
     btn.disabled = false;
   }
+}
+
+function friendlyError(raw: string): string {
+  // Strava rate-limit errors carry an ISO timestamp; render it as
+  // local HH:MM so the operator knows when to try again.
+  const m = raw.match(/rate limit.*?retry after (\S+)/i);
+  if (m && m[1]) {
+    const d = new Date(m[1]);
+    if (!Number.isNaN(d.getTime())) {
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      return `Rate limited — try again at ${hh}:${mm}`;
+    }
+  }
+  return raw;
 }
 
 async function handleHide(

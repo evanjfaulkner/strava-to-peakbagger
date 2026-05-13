@@ -420,3 +420,89 @@ describe("fetchStreams — error handling", () => {
     expect(warn).toHaveBeenCalled();
   });
 });
+
+describe("rate-limit gate", () => {
+  it("blocks pre-fetch when nextRetryAt > now", async () => {
+    const { StravaRateLimitError, setNextRetryAt } = await import(
+      "../lib/strava"
+    );
+    const future = Date.now() + 60_000;
+    await setNextRetryAt(future);
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    let caught: unknown = null;
+    try {
+      await fetchActivitiesSince(new Date("2026-01-01"));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(StravaRateLimitError);
+    expect((caught as { nextRetryAt: number }).nextRetryAt).toBe(future);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sets nextRetryAt when X-Ratelimit-Usage exceeds threshold", async () => {
+    const { getNextRetryAt } = await import("../lib/strava");
+    const body = JSON.stringify([
+      {
+        id: 1,
+        name: "n",
+        distance: 100,
+        total_elevation_gain: 10,
+        sport_type: "Hike",
+        start_date: "2026-04-01T10:00:00Z",
+        start_date_local: "2026-04-01T02:00:00",
+        timezone: "(GMT-08:00) America/Los_Angeles",
+      },
+    ]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response(body, {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              "X-Ratelimit-Limit": "100,1000",
+              "X-Ratelimit-Usage": "96,500",
+            },
+          }),
+        ),
+      ),
+    );
+
+    await fetchActivitiesSince(new Date("2026-01-01"));
+
+    const ts = await getNextRetryAt();
+    expect(ts).not.toBeNull();
+    expect(ts!).toBeGreaterThan(Date.now());
+  });
+
+  it("clears nextRetryAt on healthy responses", async () => {
+    const { getNextRetryAt, setNextRetryAt } = await import("../lib/strava");
+    await setNextRetryAt(Date.now() - 5000); // expired (in the past)
+
+    const body = JSON.stringify([]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response(body, {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              "X-Ratelimit-Limit": "100,1000",
+              "X-Ratelimit-Usage": "5,50",
+            },
+          }),
+        ),
+      ),
+    );
+
+    await fetchActivitiesSince(new Date("2026-01-01"));
+
+    expect(await getNextRetryAt()).toBeNull();
+  });
+});

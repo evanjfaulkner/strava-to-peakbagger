@@ -1,4 +1,5 @@
 import type { ActivitySummary, Track, TrackPoint } from "./models";
+import { log } from "./log";
 import { getValidAccessToken } from "./oauth";
 import { get, getSettings, set } from "./storage";
 
@@ -6,6 +7,12 @@ export const STRAVA_API_BASE = "https://www.strava.com/api/v3";
 export const PER_PAGE = 200;
 export const MAX_PAGES = 10;
 export const CACHE_TRIM_AT = 500;
+// Trip the rate-limit gate when we've used ≥95% of either bucket
+// (15-min or daily) on a successful response. 95% leaves room for
+// a couple more in-flight calls without crossing the actual limit.
+export const RATE_LIMIT_TRIP_PCT = 0.95;
+export const RATE_LIMIT_BUCKET_MS = 15 * 60 * 1000;
+const SESSION_KEY = "stravaNextRetryAt";
 
 export class StravaHTTPError extends Error {
   constructor(
@@ -21,6 +28,66 @@ export class StravaNoGPSError extends Error {
   constructor(public activityId: number) {
     super(`Activity ${activityId} has no GPS streams`);
     this.name = "StravaNoGPSError";
+  }
+}
+
+export class StravaRateLimitError extends Error {
+  constructor(public nextRetryAt: number) {
+    super(
+      `Strava rate limit reached; retry after ${new Date(nextRetryAt).toISOString()}`,
+    );
+    this.name = "StravaRateLimitError";
+  }
+}
+
+export async function getNextRetryAt(): Promise<number | null> {
+  const stored = await chrome.storage.session.get(SESSION_KEY);
+  const v = (stored as Record<string, unknown>)[SESSION_KEY];
+  return typeof v === "number" ? v : null;
+}
+
+export async function setNextRetryAt(ts: number | null): Promise<void> {
+  if (ts === null) {
+    await chrome.storage.session.remove(SESSION_KEY);
+  } else {
+    await chrome.storage.session.set({ [SESSION_KEY]: ts });
+  }
+}
+
+function parseRatePair(header: string | null): [number, number] | null {
+  if (!header) return null;
+  const parts = header.split(",").map((s) => Number(s.trim()));
+  if (parts.length !== 2 || !parts.every(Number.isFinite)) return null;
+  return [parts[0]!, parts[1]!];
+}
+
+async function recordRateLimit(res: Response): Promise<void> {
+  const limit = parseRatePair(res.headers.get("X-Ratelimit-Limit"));
+  const usage = parseRatePair(res.headers.get("X-Ratelimit-Usage"));
+  if (!limit || !usage) return;
+
+  const [limit15, limitDay] = limit;
+  const [used15, usedDay] = usage;
+  const usagePct = Math.max(
+    limit15 > 0 ? used15 / limit15 : 0,
+    limitDay > 0 ? usedDay / limitDay : 0,
+  );
+
+  if (usagePct >= RATE_LIMIT_TRIP_PCT) {
+    const now = Date.now();
+    const nextBoundary =
+      Math.ceil(now / RATE_LIMIT_BUCKET_MS) * RATE_LIMIT_BUCKET_MS;
+    await setNextRetryAt(nextBoundary);
+    void log("warn", "Strava rate limit reached", {
+      nextRetryAt: nextBoundary,
+      usage15: `${used15}/${limit15}`,
+      usageDay: `${usedDay}/${limitDay}`,
+    });
+  } else {
+    // Healthy response — clear any prior cooldown so the next call
+    // doesn't get blocked by stale state.
+    const current = await getNextRetryAt();
+    if (current !== null) await setNextRetryAt(null);
   }
 }
 
@@ -70,6 +137,11 @@ function mapActivity(raw: RawActivity): ActivitySummary {
 }
 
 async function stravaGet(path: string): Promise<unknown> {
+  const nextRetryAt = await getNextRetryAt();
+  if (nextRetryAt !== null && Date.now() < nextRetryAt) {
+    throw new StravaRateLimitError(nextRetryAt);
+  }
+
   const token = await getValidAccessToken();
   const res = await fetch(`${STRAVA_API_BASE}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -78,6 +150,7 @@ async function stravaGet(path: string): Promise<unknown> {
     const body = await res.text().catch(() => "");
     throw new StravaHTTPError(res.status, body);
   }
+  await recordRateLimit(res);
   return res.json();
 }
 

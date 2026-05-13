@@ -1,3 +1,4 @@
+import { clearLog, getRecentLog } from "../../lib/log";
 import { connectStrava, isConnected } from "../../lib/oauth";
 import {
   get,
@@ -9,6 +10,7 @@ import {
   setStravaCreds,
 } from "../../lib/storage";
 import type { Settings } from "../../lib/storage";
+import type { LogEntry } from "../../lib/models";
 
 const STATUS_CLEAR_MS = 4000;
 
@@ -112,6 +114,47 @@ export async function init(): Promise<void> {
     e.preventDefault();
     void handleSubmit();
   });
+
+  // Log viewer is best-effort: if the section was omitted from the
+  // test DOM, just skip wiring.
+  if (document.getElementById("log-view")) {
+    await renderLog();
+    const refreshBtn = document.getElementById("refresh-log-btn");
+    if (refreshBtn) refreshBtn.addEventListener("click", () => void renderLog());
+    const clearBtn = document.getElementById("clear-log-btn");
+    if (clearBtn)
+      clearBtn.addEventListener("click", () => {
+        void clearLog().then(renderLog);
+      });
+  }
+}
+
+async function renderLog(): Promise<void> {
+  const view = document.getElementById("log-view");
+  if (!view) return;
+  const entries = await getRecentLog(50);
+  if (entries.length === 0) {
+    view.textContent = "(empty)";
+    return;
+  }
+  view.textContent = entries.map(formatLogEntry).join("\n");
+}
+
+function formatLogEntry(e: LogEntry): string {
+  const t = new Date(e.t);
+  const hh = String(t.getHours()).padStart(2, "0");
+  const mm = String(t.getMinutes()).padStart(2, "0");
+  const ss = String(t.getSeconds()).padStart(2, "0");
+  const stamp = `${hh}:${mm}:${ss}`;
+  const head = `[${stamp}] [${e.level}] ${e.msg}`;
+  if (!e.ctx) return head;
+  let ctx: string;
+  try {
+    ctx = JSON.stringify(e.ctx);
+  } catch {
+    ctx = "[unstringifiable ctx]";
+  }
+  return `${head} ${ctx}`;
 }
 
 async function handleConnect(): Promise<void> {

@@ -423,4 +423,37 @@ describe("popup — idempotency UI", () => {
     const status = document.querySelector(".row-status")?.textContent ?? "";
     expect(status).toContain("already saved");
   });
+
+  it("renders Strava rate-limit errors as a local time", async () => {
+    sendMessage.mockResolvedValueOnce({
+      ok: true,
+      activities: [
+        makeActivity(101, "2026-05-08T17:00:00Z", "Hike", "T", {
+          state: "pending",
+          matchedPeakIds: [1],
+          processedPeakIds: [],
+        }),
+      ],
+    });
+    await init();
+
+    // pick a near-future iso timestamp; assert the popup formats HH:MM
+    const tomorrow = new Date(Date.now() + 60_000);
+    const iso = tomorrow.toISOString();
+    sendMessage.mockResolvedValueOnce({
+      ok: false,
+      error: `Strava rate limit reached; retry after ${iso}`,
+    });
+
+    const openBtn = document.querySelector<HTMLButtonElement>(".open-btn")!;
+    openBtn.click();
+    await flushAsync();
+    await flushAsync();
+
+    const status = document.querySelector(".row-status")?.textContent ?? "";
+    expect(status).toContain("Rate limited");
+    const hh = String(tomorrow.getHours()).padStart(2, "0");
+    const mm = String(tomorrow.getMinutes()).padStart(2, "0");
+    expect(status).toContain(`${hh}:${mm}`);
+  });
 });
