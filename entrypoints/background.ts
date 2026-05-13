@@ -140,7 +140,12 @@ export async function runWatchdog(): Promise<{
 // Real handlers (popup-facing)
 // ============================================================
 
-export type ActivityState = "unmatched" | "pending" | "done" | "hidden";
+export type ActivityState =
+  | "unmatched"
+  | "no-match"
+  | "pending"
+  | "done"
+  | "hidden";
 export type EnrichedActivity = ActivitySummary & {
   state: ActivityState;
   matchedPeakIds?: number[];
@@ -167,6 +172,15 @@ export async function handleGetActivities(
         return { ...a, state };
       }
 
+      // Empty-peakIds means "tried, found nothing" — distinct from
+      // "done" (saved on peakbagger) but filtered the same way by
+      // default. Hidden takes precedence so the user-dismissed
+      // case is still labeled as such under Show hidden.
+      if (matches.peakIds.length === 0) {
+        const state: ActivityState = isHidden ? "hidden" : "no-match";
+        return { ...a, state, matchedPeakIds: [], processedPeakIds: [] };
+      }
+
       const processedForThis = matches.peakIds.filter(
         (pid) => processed[`${a.id}:${pid}`],
       );
@@ -190,7 +204,12 @@ export async function handleGetActivities(
 
     const filtered = showHidden
       ? enriched
-      : enriched.filter((a) => a.state !== "done" && a.state !== "hidden");
+      : enriched.filter(
+          (a) =>
+            a.state !== "done" &&
+            a.state !== "hidden" &&
+            a.state !== "no-match",
+        );
     return { ok: true, activities: filtered };
   } catch (e) {
     return { ok: false, error: errMessage(e) };

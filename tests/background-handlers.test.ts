@@ -146,6 +146,22 @@ describe("handleGetActivities", () => {
     expect(res.activities[0]?.state).toBe("done");
   });
 
+  it('tags an empty-peakIds activity as state "no-match" and excludes it from the default view', async () => {
+    storage.bag["activities"] = [FAKE_ACTIVITY];
+    storage.bag["activityMatches"] = {
+      [FAKE_ACTIVITY.id]: { peakIds: [], computedAt: 0 },
+    };
+
+    const defaultRes = await handleGetActivities();
+    if (!defaultRes.ok) throw new Error("expected ok");
+    expect(defaultRes.activities).toHaveLength(0);
+
+    const fullRes = await handleGetActivities(true);
+    if (!fullRes.ok) throw new Error("expected ok");
+    expect(fullRes.activities).toHaveLength(1);
+    expect(fullRes.activities[0]?.state).toBe("no-match");
+  });
+
   it('tags an unmatched-but-hidden activity as state "hidden" and excludes it from the default view', async () => {
     storage.bag["activities"] = [FAKE_ACTIVITY];
     storage.bag["hiddenActivities"] = { [FAKE_ACTIVITY.id]: { hiddenAt: 1 } };
