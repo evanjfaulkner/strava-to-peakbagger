@@ -223,6 +223,20 @@ describe("popup — Open button", () => {
     expect(rowStatus()).toContain("Opened 2 tab");
   });
 
+  it("shows sequential copy for multi-peak (v0.3)", async () => {
+    sendMessage.mockResolvedValueOnce({
+      ok: true,
+      openedCount: 1,
+      totalMatches: 3,
+      sequential: true,
+    });
+    clickOpen();
+    await flushAsync();
+    await flushAsync();
+
+    expect(rowStatus()).toBe("Saving 1/3 (more open as you save)");
+  });
+
   it('shows "No peak matches" when openedCount is 0', async () => {
     sendMessage.mockResolvedValueOnce({ ok: true, openedCount: 0 });
     clickOpen();

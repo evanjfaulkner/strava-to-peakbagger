@@ -34,6 +34,7 @@ type Response =
       count?: number;
       openedCount?: number;
       totalMatches?: number;
+      sequential?: boolean;
       hiddenCount?: number;
       unhiddenCount?: number;
       sessionId?: string;
@@ -412,6 +413,9 @@ async function handleLog(
       } else {
         rowStatus.textContent = "All matches already saved";
       }
+    } else if (res.sequential === true) {
+      const total = res.totalMatches ?? res.openedCount ?? 1;
+      rowStatus.textContent = `Saving 1/${total} (more open as you save)`;
     } else {
       const n = res.openedCount!;
       rowStatus.textContent = `Opened ${n} tab${n === 1 ? "" : "s"}`;
