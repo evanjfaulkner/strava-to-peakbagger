@@ -1336,3 +1336,84 @@ describe("handleTripBaseline", () => {
     expect(res.ok).toBe(false);
   });
 });
+
+describe("handleAscentSaved — multi-peak chain advance (v0.3)", () => {
+  const STRAVA_ID = 555;
+
+  beforeEach(() => {
+    storage.bag["pb"] = { climberId: 99 };
+    storage.bag["activityMatches"] = {
+      [STRAVA_ID]: { peakIds: [10, 20, 30], computedAt: 0 },
+    };
+  });
+
+  it("opens the next unprocessed tab after saving peak 1 of 3", async () => {
+    const res = await handleAscentSaved({
+      stravaId: STRAVA_ID,
+      peakId: 10,
+      ascentId: 12345,
+    });
+    expect(res.ok).toBe(true);
+    expect(storage.tabsCreated).toHaveLength(1);
+    expect(storage.tabsCreated[0]?.url).toContain("pid=20");
+    expect(storage.tabsCreated[0]?.url).toContain(`#s2p=${STRAVA_ID}`);
+  });
+
+  it("opens the third tab after saving peak 2", async () => {
+    storage.bag["processed"] = {
+      [`${STRAVA_ID}:10`]: { processedAt: 0, ascentId: 111 },
+    };
+    const res = await handleAscentSaved({
+      stravaId: STRAVA_ID,
+      peakId: 20,
+      ascentId: 222,
+    });
+    expect(res.ok).toBe(true);
+    expect(storage.tabsCreated).toHaveLength(1);
+    expect(storage.tabsCreated[0]?.url).toContain("pid=30");
+  });
+
+  it("does NOT open another tab after saving the final peak", async () => {
+    storage.bag["processed"] = {
+      [`${STRAVA_ID}:10`]: { processedAt: 0, ascentId: 111 },
+      [`${STRAVA_ID}:20`]: { processedAt: 0, ascentId: 222 },
+    };
+    const res = await handleAscentSaved({
+      stravaId: STRAVA_ID,
+      peakId: 30,
+      ascentId: 333,
+    });
+    expect(res.ok).toBe(true);
+    expect(storage.tabsCreated).toHaveLength(0);
+  });
+
+  it("single-peak activities don't trigger chain advance", async () => {
+    storage.bag["activityMatches"] = {
+      666: { peakIds: [42], computedAt: 0 },
+    };
+    const res = await handleAscentSaved({
+      stravaId: 666,
+      peakId: 42,
+      ascentId: 999,
+    });
+    expect(res.ok).toBe(true);
+    expect(storage.tabsCreated).toHaveLength(0);
+  });
+
+  it("missing climberId skips chain advance without crashing", async () => {
+    storage.bag["pb"] = {};
+    const res = await handleAscentSaved({
+      stravaId: STRAVA_ID,
+      peakId: 10,
+      ascentId: 12345,
+    });
+    expect(res.ok).toBe(true);
+    expect(storage.tabsCreated).toHaveLength(0);
+    // processed still written for the saved peak
+    const processed = storage.bag["processed"] as Record<
+      string,
+      { ascentId: number | null }
+    >;
+    expect(processed[`${STRAVA_ID}:10`]?.ascentId).toBe(12345);
+  });
+});

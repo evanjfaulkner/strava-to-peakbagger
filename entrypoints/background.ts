@@ -759,6 +759,34 @@ export async function handleAscentSaved(msg: {
     await set("processed", processed);
 
     void log("info", "Saved ascent", { stravaId, peakId, ascentId });
+
+    // v0.3 multi-peak chain advance. If this activity is multi-peak
+    // and has more unprocessed peaks, open the next tab so the user
+    // doesn't have to click Log ascents again. Single-peak
+    // activities skip this block.
+    const matches = (await get("activityMatches"))?.[stravaId];
+    if (matches && matches.peakIds.length > 1) {
+      const nextPeakId = matches.peakIds.find(
+        (pid) => !processed[`${stravaId}:${pid}`],
+      );
+      if (nextPeakId !== undefined) {
+        const cid = await getClimberId();
+        if (cid !== undefined) {
+          await openOneTab(stravaId, nextPeakId, cid);
+          void log("info", "Multi-peak chain advanced", {
+            stravaId,
+            nextPeakId,
+          });
+        } else {
+          void log(
+            "warn",
+            "chain advance skipped — no climber ID",
+            { stravaId },
+          );
+        }
+      }
+    }
+
     return { ok: true };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
