@@ -38,6 +38,23 @@ export type Match = {
   summitTimeUtc: string;
 };
 
+/**
+ * What the content script should do with peakbagger's TripDD
+ * dropdown when filling the Add-Ascent form.
+ *
+ * - "single": this ascent isn't part of a multi-peak trip.
+ *   TripDD stays at 0 (the default "Single Ascent Trip" sentinel).
+ * - "new": this ascent is the first of a multi-peak trip.
+ *   TripDD = -1, plus TripNameText / TripNightsText / TripSeqText.
+ * - "attach-latest": this ascent attaches to the trip just created
+ *   by tab 1. Content script picks the max positive TripDD option
+ *   value that's > activityMatches[stravaId].priorMaxTripId.
+ */
+export type TripChoice =
+  | { kind: "single" }
+  | { kind: "new"; name: string; nights: number; seq: number }
+  | { kind: "attach-latest"; seq: number };
+
 export type PrefillPayload = {
   pid: number;
   date: string;
@@ -56,6 +73,7 @@ export type PrefillPayload = {
   upMin: number;
   dnHr: number;
   dnMin: number;
+  tripChoice: TripChoice;
 };
 
 export type LogEntry = {

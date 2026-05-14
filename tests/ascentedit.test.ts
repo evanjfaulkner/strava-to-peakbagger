@@ -43,6 +43,7 @@ const SAMPLE_PAYLOAD: PrefillPayload = {
   upMin: 30,
   dnHr: 1,
   dnMin: 30,
+  tripChoice: { kind: "single" },
 };
 
 function setUrl(href: string): void {

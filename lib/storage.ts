@@ -55,8 +55,16 @@ export type Storage = {
    * - peakIds.length > 0   → matched at least one peak
    * - peakIds.length === 0 → tried, found nothing (state "no-match")
    * - absent entry         → not yet attempted (state "unmatched")
+   *
+   * priorMaxTripId (optional): for multi-peak activities, captured
+   * by tab 1's content script *before* the user saved. Tabs 2..N
+   * use it to disambiguate "the trip we just created" — they pick
+   * the highest positive TripDD option whose value > this.
    */
-  activityMatches: Record<number, { peakIds: number[]; computedAt: number }>;
+  activityMatches: Record<
+    number,
+    { peakIds: number[]; computedAt: number; priorMaxTripId?: number }
+  >;
   matchSession: MatchSession;
   // Stores user-dismissed activities keyed by stravaId. Lets Hide
   // work on activities the user has never clicked Open on (no

@@ -36,7 +36,12 @@ describe("generic get/set", () => {
       ["peakTiles", { "37.7,-122.4": { peaks: [], fetchedAt: 1 } }],
       ["prefillPayloads", {}],
       ["processed", { "1:2": { processedAt: 1, ascentId: 99 } }],
-      ["activityMatches", { 1: { peakIds: [2, 3], computedAt: 100 } }],
+      [
+        "activityMatches",
+        {
+          1: { peakIds: [2, 3], computedAt: 100, priorMaxTripId: 49960 },
+        },
+      ],
       ["hiddenActivities", { 42: { hiddenAt: 1000 } }],
       ["matchSession", { lastAutoRefreshDay: "2026-05-13", lastBatchEndIndex: 42 }],
       ["log", []],

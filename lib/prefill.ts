@@ -61,6 +61,7 @@ export function buildPrefill(
     upMin: upMinutes % 60,
     dnHr: Math.floor(dnMinutes / 60),
     dnMin: dnMinutes % 60,
+    tripChoice: { kind: "single" },
   };
 }
 
