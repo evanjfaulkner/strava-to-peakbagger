@@ -98,23 +98,26 @@ The **Options → Recent log** section shows the last 50 events (connect, refres
 
 ## Architecture
 
-```
-┌──────────┐            ┌──────────────────────┐         ┌──────────────────┐
-│  Popup   │──messages──▶  Service worker      │──HTTP──▶  Strava API      │
-└──────────┘            │  - Strava client     │         └──────────────────┘
-                        │  - Peakbagger client │──HTTP──▶  peakbagger.com  │
-                        │  - Matcher           │         │  (PLLBB.aspx)    │
-                        │  - Prefill builder   │         └──────────────────┘
-                        │  - Storage helpers   │
-                        └──────────┬───────────┘
-                                   │ chrome.tabs.create
-                                   ▼
-                        ┌─────────────────────────┐
-                        │  peakbagger Add-Ascent  │
-                        │  (content script        │
-                        │   fills form, sends     │
-                        │   ascent-saved on save) │
-                        └─────────────────────────┘
+```mermaid
+flowchart LR
+    Popup["Popup"]
+    SW["Service worker
+    • Strava client
+    • Peakbagger client
+    • Matcher
+    • Prefill builder
+    • Storage helpers"]
+    Strava["Strava API"]
+    Pb["peakbagger.com
+    (PLLBB.aspx)"]
+    Content["peakbagger Add-Ascent
+    (content script fills form,
+    sends ascent-saved on save)"]
+
+    Popup -- messages --> SW
+    SW -- HTTP --> Strava
+    SW -- HTTP --> Pb
+    SW -- chrome.tabs.create --> Content
 ```
 
 - Built with [WXT](https://wxt.dev) + TypeScript.
