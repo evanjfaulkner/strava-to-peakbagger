@@ -25,6 +25,7 @@ let handleHideAllVisible: typeof import("../entrypoints/background").handleHideA
 let handleGetTabMapping: typeof import("../entrypoints/background").handleGetTabMapping;
 let handleMatchBatch: typeof import("../entrypoints/background").handleMatchBatch;
 let handleLogAscents: typeof import("../entrypoints/background").handleLogAscents;
+let handleTripBaseline: typeof import("../entrypoints/background").handleTripBaseline;
 let runWatchdog: typeof import("../entrypoints/background").runWatchdog;
 
 beforeAll(async () => {
@@ -39,6 +40,7 @@ beforeAll(async () => {
   handleGetTabMapping = mod.handleGetTabMapping;
   handleMatchBatch = mod.handleMatchBatch;
   handleLogAscents = mod.handleLogAscents;
+  handleTripBaseline = mod.handleTripBaseline;
   runWatchdog = mod.runWatchdog;
 });
 
@@ -1086,7 +1088,19 @@ describe("handleLogAscents", () => {
     expect(storage.tabsCreated).toEqual([]);
   });
 
-  it("opens one tab per unprocessed peakId with the correct URL", async () => {
+  it("opens the first unprocessed tab (multi-peak, v0.3 sequential)", async () => {
+    storage.bag["activities"] = [
+      {
+        id: 12345,
+        start: "2026-05-14T08:00:00Z",
+        startLocal: "2026-05-14T00:00:00",
+        tz: "UTC",
+        name: "Multi-peak",
+        sportType: "Hike",
+        distanceM: 1,
+        elevGainM: 1,
+      },
+    ];
     storage.bag["activityMatches"] = {
       12345: { peakIds: [1, 2, 3], computedAt: 0 },
     };
@@ -1100,28 +1114,38 @@ describe("handleLogAscents", () => {
 
     const res = await handleLogAscents(12345);
     expect(res.ok).toBe(true);
-    expect((res as { openedCount: number }).openedCount).toBe(2);
-    expect(storage.tabsCreated).toHaveLength(2);
-    for (const t of storage.tabsCreated) {
-      expect(t.url).toMatch(
-        /^https:\/\/www\.peakbagger\.com\/climber\/ascentedit\.aspx\?pid=\d+&cid=99#s2p=12345$/,
-      );
-    }
+    expect((res as { openedCount: number }).openedCount).toBe(1);
+    expect((res as { sequential?: boolean }).sequential).toBe(true);
+    expect(storage.tabsCreated).toHaveLength(1);
+    expect(storage.tabsCreated[0]?.url).toMatch(
+      /pid=2&cid=99#s2p=12345$/,
+    );
   });
 
-  it("warns and continues when a prefill payload is missing", async () => {
+  it("opens single tab with single-peak activity (no sequential flag)", async () => {
+    storage.bag["activities"] = [
+      {
+        id: 12345,
+        start: "2026-05-14T08:00:00Z",
+        startLocal: "2026-05-14T00:00:00",
+        tz: "UTC",
+        name: "Solo",
+        sportType: "Hike",
+        distanceM: 1,
+        elevGainM: 1,
+      },
+    ];
     storage.bag["activityMatches"] = {
-      12345: { peakIds: [1, 2], computedAt: 0 },
+      12345: { peakIds: [2], computedAt: 0 },
     };
     storage.bag["prefillPayloads"] = {
       "12345:2": { pid: 2 } as never,
-      // 12345:1 deliberately absent
     };
 
     const res = await handleLogAscents(12345);
     expect(res.ok).toBe(true);
     expect((res as { openedCount: number }).openedCount).toBe(1);
-    expect(storage.tabsCreated).toHaveLength(1);
+    expect((res as { sequential?: boolean }).sequential).toBeUndefined();
     expect(storage.tabsCreated[0]?.url).toContain("pid=2");
   });
 
@@ -1164,5 +1188,151 @@ describe("handleLogAscents", () => {
       { stravaId: number; peakId: number }
     >;
     expect(pending[1]).toEqual({ stravaId: 12345, peakId: 10 });
+  });
+});
+
+describe("handleLogAscents — multi-peak sequential (v0.3)", () => {
+  const STRAVA_ID = 555;
+
+  beforeEach(() => {
+    storage.bag["pb"] = { climberId: 99 };
+    storage.bag["activities"] = [
+      {
+        id: STRAVA_ID,
+        start: "2026-05-14T08:00:00Z",
+        startLocal: "2026-05-14T00:00:00",
+        tz: "UTC",
+        name: "Sierra Traverse",
+        sportType: "Hike",
+        distanceM: 10000,
+        elevGainM: 1000,
+      },
+    ];
+    storage.bag["activityMatches"] = {
+      [STRAVA_ID]: { peakIds: [10, 20, 30], computedAt: 0 },
+    };
+    storage.bag["prefillPayloads"] = {
+      [`${STRAVA_ID}:10`]: { pid: 10, tripChoice: { kind: "single" } } as never,
+      [`${STRAVA_ID}:20`]: { pid: 20, tripChoice: { kind: "single" } } as never,
+      [`${STRAVA_ID}:30`]: { pid: 30, tripChoice: { kind: "single" } } as never,
+    };
+    // Logged-in pre-flight stub
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response("<html>form</html>", { status: 200 })),
+      ),
+    );
+  });
+
+  it("opens only the first unprocessed tab and returns sequential:true", async () => {
+    const res = await handleLogAscents(STRAVA_ID);
+    expect(res.ok).toBe(true);
+    expect((res as { openedCount: number }).openedCount).toBe(1);
+    expect((res as { totalMatches: number }).totalMatches).toBe(3);
+    expect((res as { sequential?: boolean }).sequential).toBe(true);
+    expect(storage.tabsCreated).toHaveLength(1);
+    expect(storage.tabsCreated[0]?.url).toContain("pid=10");
+  });
+
+  it("patches all 3 prefill payloads with the right tripChoice + seq", async () => {
+    await handleLogAscents(STRAVA_ID);
+    const payloads = storage.bag["prefillPayloads"] as Record<
+      string,
+      { tripChoice: { kind: string; name?: string; nights?: number; seq?: number } }
+    >;
+    expect(payloads[`${STRAVA_ID}:10`]?.tripChoice).toEqual({
+      kind: "new",
+      name: "Sierra Traverse",
+      nights: 0,
+      seq: 1,
+    });
+    expect(payloads[`${STRAVA_ID}:20`]?.tripChoice).toEqual({
+      kind: "attach-latest",
+      seq: 2,
+    });
+    expect(payloads[`${STRAVA_ID}:30`]?.tripChoice).toEqual({
+      kind: "attach-latest",
+      seq: 3,
+    });
+  });
+
+  it("with one peak already processed, opens the first UNPROCESSED tab", async () => {
+    storage.bag["processed"] = {
+      [`${STRAVA_ID}:10`]: { processedAt: 0, ascentId: 555 },
+    };
+    const res = await handleLogAscents(STRAVA_ID);
+    expect(res.ok).toBe(true);
+    expect((res as { openedCount: number }).openedCount).toBe(1);
+    // First unprocessed is peakId 20
+    expect(storage.tabsCreated[0]?.url).toContain("pid=20");
+  });
+});
+
+describe("handleLogAscents — single-peak unchanged sequential field absent", () => {
+  it("returns sequential undefined for single-peak activities", async () => {
+    storage.bag["pb"] = { climberId: 99 };
+    storage.bag["activities"] = [
+      {
+        id: 777,
+        start: "2026-05-14T08:00:00Z",
+        startLocal: "2026-05-14T00:00:00",
+        tz: "UTC",
+        name: "Solo Hike",
+        sportType: "Hike",
+        distanceM: 5000,
+        elevGainM: 500,
+      },
+    ];
+    storage.bag["activityMatches"] = {
+      777: { peakIds: [42], computedAt: 0 },
+    };
+    storage.bag["prefillPayloads"] = {
+      "777:42": { pid: 42, tripChoice: { kind: "single" } } as never,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response("<html>form</html>", { status: 200 })),
+      ),
+    );
+
+    const res = await handleLogAscents(777);
+    expect(res.ok).toBe(true);
+    expect((res as { sequential?: boolean }).sequential).toBeUndefined();
+    expect((res as { openedCount: number }).openedCount).toBe(1);
+  });
+});
+
+describe("handleTripBaseline", () => {
+  it("writes priorMaxTripId to the activityMatches entry", async () => {
+    storage.bag["activityMatches"] = {
+      555: { peakIds: [10, 20], computedAt: 0 },
+    };
+    const res = await handleTripBaseline({ stravaId: 555, priorMaxTripId: 200 });
+    expect(res.ok).toBe(true);
+    const all = storage.bag["activityMatches"] as Record<
+      number,
+      { priorMaxTripId?: number }
+    >;
+    expect(all[555]?.priorMaxTripId).toBe(200);
+  });
+
+  it("returns ok:false when no activityMatches entry exists", async () => {
+    const res = await handleTripBaseline({ stravaId: 555, priorMaxTripId: 0 });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects invalid stravaId", async () => {
+    const res = await handleTripBaseline({ priorMaxTripId: 0 });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects invalid priorMaxTripId", async () => {
+    storage.bag["activityMatches"] = {
+      555: { peakIds: [10], computedAt: 0 },
+    };
+    const res = await handleTripBaseline({ stravaId: 555, priorMaxTripId: -5 });
+    expect(res.ok).toBe(false);
   });
 });

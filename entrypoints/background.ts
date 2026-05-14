@@ -22,6 +22,7 @@ import type {
   Match,
   PrefillPayload,
   Track,
+  TripChoice,
 } from "../lib/models";
 
 const DEV_LIST_WINDOW_MS = 7 * 24 * 3600 * 1000;
@@ -456,9 +457,27 @@ export async function handleMatchBatch(
   }
 }
 
-export async function handleLogAscents(
+// Shared helper used by handleLogAscents (Step 4) and
+// handleAscentSaved (Step 5) to open one peakbagger tab and
+// record the (tabId → {stravaId, peakId}) mapping for the
+// post-save lookup.
+export async function openOneTab(
   stravaId: number,
-): Promise<Resp<{ openedCount: number; totalMatches: number }>> {
+  peakId: number,
+  cid: number,
+): Promise<void> {
+  const url = `${PEAKBAGGER_ASCENT_URL}?pid=${peakId}&cid=${cid}#s2p=${stravaId}`;
+  const tab = await chrome.tabs.create({ url, active: false });
+  if (tab.id !== undefined) {
+    const pending = await getPendingTabSaves();
+    pending[tab.id] = { stravaId, peakId };
+    await setPendingTabSaves(pending);
+  }
+}
+
+export async function handleLogAscents(stravaId: number): Promise<
+  Resp<{ openedCount: number; totalMatches: number; sequential?: boolean }>
+> {
   try {
     if (!Number.isFinite(stravaId) || stravaId <= 0) {
       return { ok: false, error: "Invalid stravaId" };
@@ -472,8 +491,8 @@ export async function handleLogAscents(
       };
     }
 
-    const cache = (await get("activityMatches")) ?? {};
-    const entry = cache[stravaId];
+    const matchCache = (await get("activityMatches")) ?? {};
+    const entry = matchCache[stravaId];
     if (!entry || entry.peakIds.length === 0) {
       return {
         ok: false,
@@ -493,9 +512,7 @@ export async function handleLogAscents(
       };
     }
 
-    // Pre-flight session check. peakbagger silently renders an
-    // empty Add-Ascent template when logged out (no peak name, no
-    // climber name) which previously produced useless tabs.
+    // Pre-flight session check.
     const loggedIn = await isPeakbaggerLoggedIn();
     if (!loggedIn) {
       return {
@@ -505,8 +522,60 @@ export async function handleLogAscents(
       };
     }
 
+    const isMultiPeak = entry.peakIds.length > 1;
+    const activities = (await get("activities")) ?? [];
+    const activity = activities.find((a) => a.id === stravaId);
+    const activityName = activity?.name ?? "Trip";
+
+    // Patch every payload's tripChoice based on its index in the
+    // (summit-time-ordered) peakIds list. handleMatchBatch wrote
+    // payloads with default { kind: "single" } tripChoice; for
+    // multi-peak activities we override.
     const payloads = (await get("prefillPayloads")) ?? {};
-    const sessionPending = await getPendingTabSaves();
+    for (let i = 0; i < entry.peakIds.length; i++) {
+      const peakId = entry.peakIds[i]!;
+      const key = `${stravaId}:${peakId}`;
+      const payload = payloads[key];
+      if (!payload) continue;
+      const tripChoice: TripChoice = !isMultiPeak
+        ? { kind: "single" }
+        : i === 0
+          ? {
+              kind: "new",
+              name: activityName,
+              nights: 0,
+              seq: 1,
+            }
+          : { kind: "attach-latest", seq: i + 1 };
+      payloads[key] = { ...payload, tripChoice };
+    }
+    await set("prefillPayloads", payloads);
+
+    if (isMultiPeak) {
+      // Sequential: open ONLY the first unprocessed tab. The chain
+      // advances via handleAscentSaved in Step 5.
+      const firstPeakId = unprocessed[0]!;
+      if (!payloads[`${stravaId}:${firstPeakId}`]) {
+        return {
+          ok: false,
+          error: `logAscents: prefill missing for ${stravaId}:${firstPeakId}`,
+        };
+      }
+      await openOneTab(stravaId, firstPeakId, cid);
+      void log("info", "Logged ascents — multi-peak sequential start", {
+        stravaId,
+        totalMatches: entry.peakIds.length,
+        unprocessed: unprocessed.length,
+      });
+      return {
+        ok: true,
+        openedCount: 1,
+        totalMatches: entry.peakIds.length,
+        sequential: true,
+      };
+    }
+
+    // Single-peak: existing parallel behavior.
     let openedCount = 0;
     for (const peakId of unprocessed) {
       const key = `${stravaId}:${peakId}`;
@@ -517,16 +586,11 @@ export async function handleLogAscents(
         });
         continue;
       }
-      const url = `${PEAKBAGGER_ASCENT_URL}?pid=${peakId}&cid=${cid}#s2p=${stravaId}`;
-      const tab = await chrome.tabs.create({ url, active: false });
-      if (tab.id !== undefined) {
-        sessionPending[tab.id] = { stravaId, peakId };
-      }
+      await openOneTab(stravaId, peakId, cid);
       openedCount++;
     }
-    await setPendingTabSaves(sessionPending);
 
-    void log("info", "Logged ascents (v0.2)", {
+    void log("info", "Logged ascents — single-peak", {
       stravaId,
       openedCount,
       totalMatches: entry.peakIds.length,
@@ -536,6 +600,34 @@ export async function handleLogAscents(
       openedCount,
       totalMatches: entry.peakIds.length,
     };
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+}
+
+export async function handleTripBaseline(msg: {
+  stravaId?: unknown;
+  priorMaxTripId?: unknown;
+}): Promise<{ ok: true } | Err> {
+  try {
+    const stravaId = Number(msg.stravaId);
+    const priorMaxTripId = Number(msg.priorMaxTripId);
+    if (!Number.isFinite(stravaId) || stravaId <= 0) {
+      return { ok: false, error: "trip-baseline: invalid stravaId" };
+    }
+    if (!Number.isFinite(priorMaxTripId) || priorMaxTripId < 0) {
+      return { ok: false, error: "trip-baseline: invalid priorMaxTripId" };
+    }
+    const all = (await get("activityMatches")) ?? {};
+    const entry = all[stravaId];
+    if (!entry) {
+      void log("warn", "trip-baseline: no activityMatches entry", { stravaId });
+      return { ok: false, error: "no activityMatches entry" };
+    }
+    all[stravaId] = { ...entry, priorMaxTripId };
+    await set("activityMatches", all);
+    void log("info", "trip-baseline recorded", { stravaId, priorMaxTripId });
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: errMessage(e) };
   }
@@ -900,6 +992,16 @@ export default defineBackground(() => {
     // so the popup can filter out already-saved activities.
     if (type === "ascent-saved") {
       void handleAscentSaved(msg).then(sendResponse).catch((e: unknown) =>
+        sendResponse({ ok: false, error: errMessage(e) }),
+      );
+      return true;
+    }
+
+    // Content-script-emitted signal (v0.3). Tab 1 of a multi-peak
+    // chain captures the prior max TripDD option value before save
+    // so tabs 2..N can disambiguate the newly-created trip.
+    if (type === "trip-baseline") {
+      void handleTripBaseline(msg).then(sendResponse).catch((e: unknown) =>
         sendResponse({ ok: false, error: errMessage(e) }),
       );
       return true;
