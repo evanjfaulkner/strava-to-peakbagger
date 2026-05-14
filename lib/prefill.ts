@@ -3,6 +3,7 @@ import type {
   Match,
   PrefillPayload,
   Track,
+  TripChoice,
 } from "./models";
 import {
   durationSec,
@@ -19,6 +20,7 @@ export function buildPrefill(
   track: Track,
   match: Match,
   activity: ActivitySummary,
+  tripChoice: TripChoice = { kind: "single" },
 ): PrefillPayload {
   if (track.points.length === 0) {
     throw new RangeError("buildPrefill: track has no points");
@@ -61,7 +63,7 @@ export function buildPrefill(
     upMin: upMinutes % 60,
     dnHr: Math.floor(dnMinutes / 60),
     dnMin: dnMinutes % 60,
-    tripChoice: { kind: "single" },
+    tripChoice,
   };
 }
 

@@ -225,3 +225,33 @@ describe("buildPrefill — edge cases", () => {
     expect(out.dnMin).toBe(0);
   });
 });
+
+describe("buildPrefill — tripChoice", () => {
+  it("defaults to { kind: 'single' } when no tripChoice arg is given", () => {
+    const out = buildPrefill(TRACK, MATCH, ACTIVITY);
+    expect(out.tripChoice).toEqual({ kind: "single" });
+  });
+
+  it("embeds a 'new' tripChoice verbatim", () => {
+    const out = buildPrefill(TRACK, MATCH, ACTIVITY, {
+      kind: "new",
+      name: "Sierra Traverse",
+      nights: 0,
+      seq: 1,
+    });
+    expect(out.tripChoice).toEqual({
+      kind: "new",
+      name: "Sierra Traverse",
+      nights: 0,
+      seq: 1,
+    });
+  });
+
+  it("embeds an 'attach-latest' tripChoice verbatim", () => {
+    const out = buildPrefill(TRACK, MATCH, ACTIVITY, {
+      kind: "attach-latest",
+      seq: 2,
+    });
+    expect(out.tripChoice).toEqual({ kind: "attach-latest", seq: 2 });
+  });
+});
