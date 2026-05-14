@@ -2,7 +2,7 @@
 
 A Chrome extension that pre-fills [peakbagger.com](https://peakbagger.com) Add-Ascent forms using your [Strava](https://strava.com) activities. Open the popup, see your activities that summited a peak, click Log ascents on the one you want — get one pre-filled peakbagger tab per peak, click Save in each.
 
-**v0.3.0 · experimental · personal use only** — see [Limitations](#limitations-and-design-choices) for why.
+**v0.3.1 · experimental · personal use only** — see [Limitations](#limitations-and-design-choices) for why.
 
 ## What it does
 

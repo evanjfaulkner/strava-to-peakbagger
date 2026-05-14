@@ -322,6 +322,8 @@ async function runPipelineForActivity(
         track,
         m,
         activity,
+        { kind: "single" },
+        matches,
       );
     }
     await set("prefillPayloads", payloads);
@@ -689,7 +691,7 @@ export async function handleProcessActivity(
     const updated = { ...current };
     for (const m of unprocessedMatches) {
       const key = `${stravaId}:${m.peak.peakId}`;
-      updated[key] = buildPrefill(track, m, activity);
+      updated[key] = buildPrefill(track, m, activity, { kind: "single" }, matches);
     }
     await set("prefillPayloads", updated);
 

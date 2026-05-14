@@ -255,3 +255,86 @@ describe("buildPrefill — tripChoice", () => {
     expect(out.tripChoice).toEqual({ kind: "attach-latest", seq: 2 });
   });
 });
+
+describe("buildPrefill — multi-peak segment metrics", () => {
+  // 9-point traverse with 3 summits (A, B, C). Between each summit
+  // the track dips ~200 m before climbing back. Altitudes (m):
+  // 1000 → 1500(A) → 1300 → 1600(B) → 1400 → 1700(C) → 1000
+  // trackIdx:  0      2        4       5        6      8       — but
+  // we use 9 points (0..8) with summits at 2, 5, 8.
+  const PEAK_A: Peak = { peakId: 101, name: "A", lat: 37.71, lng: -122.40, elevM: 1500 };
+  const PEAK_B: Peak = { peakId: 102, name: "B", lat: 37.72, lng: -122.41, elevM: 1600 };
+  const PEAK_C: Peak = { peakId: 103, name: "C", lat: 37.73, lng: -122.42, elevM: 1700 };
+
+  const MULTI_TRACK: Track = {
+    tz: "America/Los_Angeles",
+    points: [
+      point(37.700, -122.400, 1000, 0),       // 0 trailhead
+      point(37.705, -122.400, 1250, 1800),    // 1
+      point(37.710, -122.400, 1500, 3600),    // 2 summit A
+      point(37.715, -122.405, 1300, 5400),    // 3 saddle
+      point(37.718, -122.408, 1450, 7200),    // 4
+      point(37.720, -122.410, 1600, 9000),    // 5 summit B
+      point(37.725, -122.415, 1400, 10800),   // 6 saddle
+      point(37.728, -122.418, 1550, 12600),   // 7
+      point(37.730, -122.420, 1700, 14400),   // 8 summit C
+    ],
+  };
+  const MATCH_A: Match = { peak: PEAK_A, trackIdx: 2, horizM: 0, vertM: 0, summitTimeUtc: "2026-04-15T18:00:00Z" };
+  const MATCH_B: Match = { peak: PEAK_B, trackIdx: 5, horizM: 0, vertM: 0, summitTimeUtc: "2026-04-15T19:30:00Z" };
+  const MATCH_C: Match = { peak: PEAK_C, trackIdx: 8, horizM: 0, vertM: 0, summitTimeUtc: "2026-04-15T21:00:00Z" };
+  const SIBLINGS = [MATCH_A, MATCH_B, MATCH_C];
+
+  it("ascent 1 (A): up = trailhead→A, down = A→B", () => {
+    const out = buildPrefill(MULTI_TRACK, MATCH_A, ACTIVITY, { kind: "single" }, SIBLINGS);
+    // up: idx 0..2 → gain 1000→1250→1500 = 500 m = ~1640 ft
+    expect(out.startFt).toBe(Math.round(1000 / 0.3048));   // trailhead
+    // segment end is summit B
+    expect(out.endFt).toBe(Math.round(1600 / 0.3048));
+    expect(out.gainFt).toBe(Math.round(500 / 0.3048));
+  });
+
+  it("ascent 2 (B): up = A→B (includes saddle dip), down = B→C", () => {
+    const out = buildPrefill(MULTI_TRACK, MATCH_B, ACTIVITY, { kind: "single" }, SIBLINGS);
+    // up A→B: 1500 → 1300 → 1450 → 1600 → gain = +150 +150 = 300 m
+    expect(out.startFt).toBe(Math.round(1500 / 0.3048));   // prior summit A
+    expect(out.endFt).toBe(Math.round(1700 / 0.3048));     // next summit C
+    expect(out.gainFt).toBe(Math.round(300 / 0.3048));
+  });
+
+  it("ascent 3 (C): up = B→C, down = C→trail end", () => {
+    const out = buildPrefill(MULTI_TRACK, MATCH_C, ACTIVITY, { kind: "single" }, SIBLINGS);
+    // up B→C: 1600 → 1400 → 1550 → 1700 → gain = +150 +150 = 300 m
+    expect(out.startFt).toBe(Math.round(1600 / 0.3048));   // prior summit B
+    // C is the last summit AND last track point → endFt = C
+    expect(out.endFt).toBe(Math.round(1700 / 0.3048));
+    expect(out.gainFt).toBe(Math.round(300 / 0.3048));
+  });
+
+  it("per-peak gain sums to total activity gain (no double-counting)", () => {
+    const a = buildPrefill(MULTI_TRACK, MATCH_A, ACTIVITY, { kind: "single" }, SIBLINGS);
+    const b = buildPrefill(MULTI_TRACK, MATCH_B, ACTIVITY, { kind: "single" }, SIBLINGS);
+    const c = buildPrefill(MULTI_TRACK, MATCH_C, ACTIVITY, { kind: "single" }, SIBLINGS);
+    // Activity total gain: 500 (start→A) + 300 (A→B) + 300 (B→C) = 1100 m.
+    // Per-ascent rounding can drift by a foot; tolerance 2 ft is plenty.
+    const sumFt = a.gainFt + b.gainFt + c.gainFt;
+    expect(Math.abs(sumFt - 1100 / 0.3048)).toBeLessThanOrEqual(2);
+  });
+
+  it("single-element siblings array behaves like no siblings (cumulative)", () => {
+    // Lone match in siblings → length === 1 → fall back to
+    // trailhead → trail-end semantics, same as omitting siblings.
+    const out = buildPrefill(MULTI_TRACK, MATCH_B, ACTIVITY, { kind: "single" }, [MATCH_B]);
+    // cumulative: start = 1000 (trailhead), end = 1700 (trail end)
+    expect(out.startFt).toBe(Math.round(1000 / 0.3048));
+    expect(out.endFt).toBe(Math.round(1700 / 0.3048));
+  });
+
+  it("omitting siblings preserves the original single-peak behavior", () => {
+    const out = buildPrefill(MULTI_TRACK, MATCH_B, ACTIVITY);
+    // cumulative trailhead-to-summit gain: 1000→1250→1500→1300→1450→1600
+    // positives: 250 + 250 + 150 + 150 = 800 m
+    expect(out.gainFt).toBe(Math.round(800 / 0.3048));
+    expect(out.startFt).toBe(Math.round(1000 / 0.3048));
+  });
+});
