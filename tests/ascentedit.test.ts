@@ -19,10 +19,14 @@ import { installFakeChromeStorage } from "./fakeChromeStorage";
 // Dynamic import so the stub above is in place when the content-script
 // module evaluates.
 let init: () => Promise<void>;
+let currentMaxTripId: (s: HTMLSelectElement) => number;
+let pickLatestTripIdAfter: (s: HTMLSelectElement, prior: number) => number | null;
 
 beforeAll(async () => {
   const mod = await import("../entrypoints/ascentedit.content");
   init = mod.init;
+  currentMaxTripId = mod.currentMaxTripId;
+  pickLatestTripIdAfter = mod.pickLatestTripIdAfter;
 });
 
 const STRAVA_ID = 987654321;
@@ -55,7 +59,11 @@ function setUrl(href: string): void {
 }
 
 function buildPeakbaggerForm(
-  opts: { withSaved?: boolean; omit?: Set<string> } = {},
+  opts: {
+    withSaved?: boolean;
+    omit?: Set<string>;
+    tripDDOptions?: Array<{ value: string; label?: string }>;
+  } = {},
 ): void {
   const omit = opts.omit ?? new Set<string>();
   const inputs: string[] = [];
@@ -72,6 +80,9 @@ function buildPeakbaggerForm(
     "UpMin",
     "DnHr",
     "DnMin",
+    "TripNameText",
+    "TripNightsText",
+    "TripSeqText",
   ];
   for (const name of textInputs) {
     if (omit.has(name)) continue;
@@ -83,6 +94,19 @@ function buildPeakbaggerForm(
   if (!omit.has("AscentTypeRBL")) {
     inputs.push(`<input name="AscentTypeRBL" type="radio" value="S" />`);
     inputs.push(`<input name="AscentTypeRBL" type="radio" value="A" />`);
+  }
+  if (!omit.has("TripDD")) {
+    const tripOptions = opts.tripDDOptions ?? [
+      { value: "0", label: "Single Ascent Trip" },
+      { value: "-1", label: "Add New Trip" },
+      { value: "-2", label: "Update Trip Name/Nights" },
+      { value: "200", label: "Existing B" },
+      { value: "100", label: "Existing A" },
+    ];
+    const optionHtml = tripOptions
+      .map((o) => `<option value="${o.value}">${o.label ?? ""}</option>`)
+      .join("");
+    inputs.push(`<select name="TripDD">${optionHtml}</select>`);
   }
   const subtitle = opts.withSaved
     ? '<span id="SubTitle">Ascent — Saved Successfully</span>'
@@ -330,5 +354,190 @@ describe("init — post-save state", () => {
     expect(storage.messages).toEqual([
       { type: "ascent-saved", stravaId: STRAVA_ID, peakId: PEAK_ID, ascentId: null },
     ]);
+  });
+});
+
+describe("currentMaxTripId / pickLatestTripIdAfter", () => {
+  function makeSelect(values: string[]): HTMLSelectElement {
+    const s = document.createElement("select");
+    for (const v of values) {
+      const o = document.createElement("option");
+      o.value = v;
+      s.appendChild(o);
+    }
+    return s;
+  }
+
+  it("currentMaxTripId returns 0 when only sentinels are present", () => {
+    const s = makeSelect(["0", "-1", "-2"]);
+    expect(currentMaxTripId(s)).toBe(0);
+  });
+
+  it("currentMaxTripId picks the largest positive value", () => {
+    const s = makeSelect(["0", "-1", "100", "200", "50"]);
+    expect(currentMaxTripId(s)).toBe(200);
+  });
+
+  it("pickLatestTripIdAfter returns null when no value > prior", () => {
+    const s = makeSelect(["0", "-1", "100", "200"]);
+    expect(pickLatestTripIdAfter(s, 200)).toBeNull();
+  });
+
+  it("pickLatestTripIdAfter picks the largest value > prior", () => {
+    const s = makeSelect(["0", "-1", "100", "200", "300"]);
+    expect(pickLatestTripIdAfter(s, 100)).toBe(300);
+  });
+});
+
+describe("init — trip handling (v0.3)", () => {
+  function makePayload(choice: PrefillPayload["tripChoice"]): PrefillPayload {
+    return { ...SAMPLE_PAYLOAD, tripChoice: choice };
+  }
+
+  function tripDD(): HTMLSelectElement {
+    return document.querySelector(
+      'select[name="TripDD"]',
+    ) as HTMLSelectElement;
+  }
+  function nameInput(): HTMLInputElement {
+    return document.querySelector(
+      'input[name="TripNameText"]',
+    ) as HTMLInputElement;
+  }
+  function nightsInput(): HTMLInputElement {
+    return document.querySelector(
+      'input[name="TripNightsText"]',
+    ) as HTMLInputElement;
+  }
+  function seqInput(): HTMLInputElement {
+    return document.querySelector(
+      'input[name="TripSeqText"]',
+    ) as HTMLInputElement;
+  }
+
+  it("kind=single sets TripDD to 0 and leaves the trip text fields empty", async () => {
+    storage.bag["prefillPayloads"] = {
+      [`${STRAVA_ID}:${PEAK_ID}`]: makePayload({ kind: "single" }),
+    };
+    setUrl(
+      `https://www.peakbagger.com/climber/ascentedit.aspx?pid=${PEAK_ID}#s2p=${STRAVA_ID}`,
+    );
+    buildPeakbaggerForm();
+
+    await init();
+
+    expect(tripDD().value).toBe("0");
+    expect(nameInput().value).toBe("");
+    expect(seqInput().value).toBe("");
+  });
+
+  it("kind=new sends trip-baseline, sets TripDD=-1, fills name/nights/seq", async () => {
+    storage.bag["prefillPayloads"] = {
+      [`${STRAVA_ID}:${PEAK_ID}`]: makePayload({
+        kind: "new",
+        name: "Sierra Traverse",
+        nights: 0,
+        seq: 1,
+      }),
+    };
+    setUrl(
+      `https://www.peakbagger.com/climber/ascentedit.aspx?pid=${PEAK_ID}#s2p=${STRAVA_ID}`,
+    );
+    buildPeakbaggerForm(); // default options include max=200
+
+    await init();
+
+    expect(tripDD().value).toBe("-1");
+    expect(nameInput().value).toBe("Sierra Traverse");
+    expect(nightsInput().value).toBe("0");
+    expect(seqInput().value).toBe("1");
+    const baseline = storage.messages.find(
+      (m): m is { type: string; priorMaxTripId: number } =>
+        typeof m === "object" &&
+        m !== null &&
+        (m as { type?: string }).type === "trip-baseline",
+    );
+    expect(baseline).toBeDefined();
+    expect(baseline!.priorMaxTripId).toBe(200);
+  });
+
+  it("kind=attach-latest picks max trip > priorMaxTripId, fills seq", async () => {
+    storage.bag["prefillPayloads"] = {
+      [`${STRAVA_ID}:${PEAK_ID}`]: makePayload({
+        kind: "attach-latest",
+        seq: 2,
+      }),
+    };
+    storage.bag["activityMatches"] = {
+      [STRAVA_ID]: {
+        peakIds: [PEAK_ID, 99],
+        computedAt: 0,
+        priorMaxTripId: 200,
+      },
+    };
+    setUrl(
+      `https://www.peakbagger.com/climber/ascentedit.aspx?pid=${PEAK_ID}#s2p=${STRAVA_ID}`,
+    );
+    buildPeakbaggerForm({
+      tripDDOptions: [
+        { value: "0" },
+        { value: "-1" },
+        { value: "-2" },
+        { value: "100" },
+        { value: "200" },
+        { value: "201" }, // the just-created trip
+      ],
+    });
+
+    await init();
+
+    expect(tripDD().value).toBe("201");
+    expect(seqInput().value).toBe("2");
+  });
+
+  it("kind=attach-latest with no priorMaxTripId in storage uses 0 (picks overall max)", async () => {
+    storage.bag["prefillPayloads"] = {
+      [`${STRAVA_ID}:${PEAK_ID}`]: makePayload({
+        kind: "attach-latest",
+        seq: 2,
+      }),
+    };
+    // No activityMatches entry seeded → defaults to prior = 0
+    setUrl(
+      `https://www.peakbagger.com/climber/ascentedit.aspx?pid=${PEAK_ID}#s2p=${STRAVA_ID}`,
+    );
+    buildPeakbaggerForm({
+      tripDDOptions: [
+        { value: "0" },
+        { value: "-1" },
+        { value: "100" },
+        { value: "200" },
+      ],
+    });
+
+    await init();
+
+    expect(tripDD().value).toBe("200");
+  });
+
+  it("missing TripDD select is non-fatal (warn + continue filling other fields)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    storage.bag["prefillPayloads"] = {
+      [`${STRAVA_ID}:${PEAK_ID}`]: makePayload({ kind: "single" }),
+    };
+    setUrl(
+      `https://www.peakbagger.com/climber/ascentedit.aspx?pid=${PEAK_ID}#s2p=${STRAVA_ID}`,
+    );
+    buildPeakbaggerForm({ omit: new Set(["TripDD"]) });
+
+    await init();
+
+    // Other fields still filled (sample assertion).
+    expect(inputByName("DateText").value).toBe("2026-04-15");
+    expect(
+      warn.mock.calls.some((c) =>
+        String(c[0]).includes("TripDD select not found"),
+      ),
+    ).toBe(true);
   });
 });
