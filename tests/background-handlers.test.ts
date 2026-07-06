@@ -223,11 +223,11 @@ describe("handleProcessActivity — error paths", () => {
     expect(storage.tabsCreated).toEqual([]);
   });
 
-  it("surfaces a Refresh-first error when the activity isn't cached", async () => {
+  it("surfaces a Find-next-first error when the activity isn't cached", async () => {
     storage.bag["pb"] = { climberId: 99 };
     const res = await handleProcessActivity(99999);
     expect(res.ok).toBe(false);
-    expect((res as { error: string }).error).toMatch(/Refresh/);
+    expect((res as { error: string }).error).toMatch(/not in cache/);
   });
 });
 

@@ -59,18 +59,18 @@ Three pieces of one-time setup, all done from the extension's Options page (clic
 
 ## How to use
 
-1. Click the extension icon. On first install (or first open of a new day), the popup auto-refreshes from Strava and starts matching your recent activities in the background. You'll see `Scanned N · Found M matches` tick up as it works, and matched activities appear in the list as soon as they're found.
+1. Click the extension icon. On first install (or first open of a new day), the popup auto-refreshes from Strava and matches your recent activities in the background, surfacing the first activity with an un-logged summit. You'll see `Scanned N · Found M matches` tick up as it works, and matched activities appear in the list as soon as they're found.
 2. The popup only shows activities that summited at least one peak — Yoga / flat city runs / non-summit rides are silently filtered out.
 3. Click **Log ascents** on the activity you want to log. Single-peak activities open one pre-filled tab. **Multi-peak activities** (ridge traverses) open one tab at a time: the first peak is set to create a new peakbagger Trip, and subsequent peaks auto-open as you click Save — each one attaches to the same trip in order.
 4. Switch to each opened tab. Verify the pre-filled fields, then click **Save Ascent** on the peakbagger form.
 5. After saving, the activity drops out of the popup's default view. Partially-saved activities show an `M/N saved` badge.
-6. Click **Load more** at the bottom of the list to scan the next 20 unmatched activities. If you hit Strava's rate limit, the button text will tell you when to try again.
+6. Click **Find next match** (header) to re-sync from Strava and scan forward to the next activity with an un-logged summit — repeat to walk through your whole lookback window one match at a time. When there's nothing left it shows `No more matches — you're all caught up.` If you hit Strava's rate limit mid-scan, the button tells you when to try again and re-enables automatically; click it to resume.
 
-Subsequent popup opens on the same day are instant — they read cached results. Each new day, the auto-trigger fires once when you first open the popup.
+Subsequent popup opens on the same day are instant — they read cached results. Each new day, the auto-trigger fires once when you first open the popup, surfacing the first match; use **Find next match** for the rest.
 
 Per-row affordances:
 
-- **Open** — runs the match pipeline for that activity.
+- **Log ascents** — opens a pre-filled peakbagger tab for each matched peak (see step 3).
 - **Hide** — marks the activity as processed locally without saving anything on peakbagger. Use this to dismiss false-positive matches or activities you don't want to log.
 - **Show hidden** (header toggle) — reveals hidden + already-saved rows. Each gets an **Unhide** button.
 
@@ -80,7 +80,7 @@ All on the Options page.
 
 - **Horizontal match threshold** (`horizM`, default **75 m**) — how close a track point must come to a peak's coordinates to count as a summit. Tune lower if you get false positives, higher if real summits are being missed. Ski GPS tends to be noisier than hiking; 75 m handles both well in practice.
 - **Vertical match threshold** (`vertM`, default 25 m) — currently dormant, since peakbagger's bbox API doesn't return peak elevations. Reserved for a future enhancement.
-- **Initial lookback (days)** (`lookbackDays`, default 90) — how far back to fetch Strava activities on each Refresh (manual click or daily auto-trigger).
+- **Initial lookback (days)** (`lookbackDays`, default 90) — how far back to fetch Strava activities on each sync (a **Find next match** click or the daily auto-trigger).
 - **Activity-type blacklist** — Strava sport types skipped before fetching streams. Defaults to indoor activities (Yoga, WeightTraining, VirtualRide, etc.). One per line.
 
 ## Troubleshooting
@@ -88,11 +88,11 @@ All on the Options page.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `Connect Strava` popup says "redirect_uri is invalid" | Callback domain on your Strava app isn't `chromiumapp.org` | Edit at [strava.com/settings/api](https://www.strava.com/settings/api), exact string `chromiumapp.org`. |
-| `Rate limited — try again at HH:MM` on the Load more button | Strava 100/15-min non-upload limit hit by an auto-continue chain | Wait until the displayed time. The button re-enables automatically. |
+| `Rate limited — try again at HH:MM` on the Find next match button | Strava 100/15-min non-upload limit hit by an auto-continue chain | Wait until the displayed time. The button re-enables automatically, then click it to resume the scan. |
 | "Invalid User!!!" page when a tab opens | Climber ID not saved (or wrong) in Options | Re-check your cid from peakbagger's My Home Page URL; Save. |
 | Tab opens with peak name visible but other fields blank | Content script silently bailed (the most common cause was a `pid` parsing issue, fixed in v0.1.0) | In the page's DevTools Console, set log level to **Verbose** and look for `[s2p]` messages. |
 | Activity stays visible after saving | Post-save signal didn't reach the SW. The Step-12 SW tab-mapping should prevent this, but the **Hide** button is the manual recovery. | Click Hide on the row, or open the **Options → Recent log** section to see what happened. |
-| Popup is empty after Refresh | All activities in your lookback window are blacklisted, OR Strava returned an error | Check the Recent log on the Options page. |
+| Popup is empty after Find next match | All activities in your lookback window are blacklisted or have no summits, OR Strava returned an error | Check the Recent log on the Options page. |
 
 The **Options → Recent log** section shows the last 50 events (connect, refresh, processActivity, save, errors). For deeper digging, `chrome://extensions` → the extension card → service worker **Inspect views** opens the SW DevTools.
 
@@ -130,7 +130,7 @@ flowchart LR
 - **Personal use only.** Your Strava OAuth `client_secret` lives in `chrome.storage.local`. Strava's API agreement frowns on embedding secrets in clients; this is acceptable for a single-user install where you control both ends, but you should never publish a forked version of this extension that ships someone else's secret.
 - **Peakbagger ToS forbids automated scraping.** The extension keeps a human in the loop (you click Save) and is rate-limited and sends a polite User-Agent. This mirrors the posture of [`npwolf/peakbagger_gpx_ascent_logger`](https://github.com/npwolf/peakbagger_gpx_ascent_logger). If you intend to share this beyond personal use, contact Greg Slayden (peakbagger's owner) first.
 - **Strava Single-Player Mode** — since Nov 2024, new Strava API apps cap at 1 authorized athlete unless approved by Strava. Fine for personal use; not for distribution.
-- **Eager batched matching.** v0.2 changed the model from "click Open to find out" to "open popup, see matches." A batch of 20 fresh activities auto-runs on first open of each local day. The popup hides activities that scanned to zero matches.
+- **Eager, one-at-a-time matching.** v0.2 changed the model from "click Open to find out" to "open popup, see matches." Opening the popup (first time each local day) auto-syncs and surfaces the first activity with an un-logged summit; **Find next match** advances to the next, scanning forward through your lookback window while skipping already-matched activities instantly. Stopping at one match per click keeps Strava API usage bounded — a scan only pays for the activities between matches, and each is cached so it's never re-fetched. The popup hides activities that scanned to zero matches.
 - **Multi-peak trip automation is sequential, not parallel.** Multi-peak activities open one ascentedit tab at a time so the first save can create a peakbagger Trip, and subsequent ascents can attach to it. If you want every peak as a standalone ascent, you can manually clear the Trip dropdown in each tab before saving.
 - **Peakbagger's PLLBB endpoint doesn't return elevation**, so the vertical match gate (`vertM`) is dormant in v1. The horizontal gate (`horizM`) does all the filtering.
 

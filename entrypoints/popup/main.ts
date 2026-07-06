@@ -45,6 +45,7 @@ type Response =
   | { ok: false; error: string };
 
 const BATCH_SIZE = 20;
+const FIND_NEXT_LABEL = "Find next match";
 
 async function send(message: unknown): Promise<Response> {
   return chrome.runtime.sendMessage(message) as Promise<Response>;
@@ -95,7 +96,7 @@ export async function init(): Promise<void> {
   await renderActivities();
 
   el<HTMLButtonElement>("refresh-btn").addEventListener("click", () => {
-    void handleRefresh();
+    void handleFindNext();
   });
 
   el<HTMLInputElement>("show-hidden").addEventListener("change", (e) => {
@@ -107,13 +108,6 @@ export async function init(): Promise<void> {
   if (hideAllBtn instanceof HTMLButtonElement) {
     hideAllBtn.addEventListener("click", () => {
       void handleHideAll();
-    });
-  }
-
-  const loadMoreBtn = document.getElementById("load-more-btn");
-  if (loadMoreBtn instanceof HTMLButtonElement) {
-    loadMoreBtn.addEventListener("click", () => {
-      void handleLoadMore();
     });
   }
 
@@ -136,12 +130,13 @@ async function maybeAutoTrigger(): Promise<void> {
   if (session?.lastAutoRefreshDay === today) return;
 
   batchInFlight = true;
-  updateLoadMoreButton({ disabled: true, text: "Loading…" });
+  updateFindNextButton({ disabled: true, text: "Searching…" });
 
   try {
     const refreshRes = await send({ type: "refreshActivities" });
     if (!refreshRes.ok) {
       setStatus(`Refresh failed: ${friendlyError(refreshRes.error)}`);
+      updateFindNextButton({ disabled: false, text: FIND_NEXT_LABEL });
       return;
     }
     // Auto-trigger always starts from index 0 of the cached
@@ -195,53 +190,74 @@ async function handleBatchDone(msg: unknown): Promise<void> {
       lastBatchEndIndex: m.endIndex,
     });
   }
-  // Final state for Load more button.
-  if (m.reason === "exhausted") {
-    updateLoadMoreButton({
-      disabled: true,
-      text: "No more activities",
-      visible: true,
-    });
-  } else if (m.reason === "rate-limited") {
+  // Final state for the Find next match button.
+  if (m.reason === "rate-limited") {
     const ts = (await getStravaNextRetryAt()) ?? Date.now() + 60_000;
-    updateLoadMoreButton({
+    updateFindNextButton({
       disabled: true,
       text: `Rate limited — try again at ${fmtHHMM(ts)}`,
-      visible: true,
     });
     scheduleCooldownRecheck(ts);
   } else {
-    updateLoadMoreButton({ disabled: false, text: "Load more", visible: true });
+    // found-pending, exhausted, or manual-stop: re-enable so the user
+    // can look for the next one. On exhaustion we scanned to the end
+    // of the window with nothing left to surface, so say so — but keep
+    // the button live in case a later sync adds new activities.
+    updateFindNextButton({ disabled: false, text: FIND_NEXT_LABEL });
+    if (m.reason === "exhausted") {
+      setStatus("No more matches — you're all caught up.");
+    }
   }
 }
 
-async function handleLoadMore(): Promise<void> {
+// The header button (formerly "Refresh"). Re-syncs the activity list,
+// then walks the matcher forward until it surfaces the next activity
+// with an un-logged summit. We always scan from index 0: the cache is
+// sorted newest-first, so a freshly-synced activity lands at the top,
+// and the instant activityMatches skip in the SW means already-scanned
+// activities cost no Strava call — so scanning from 0 is both correct
+// (never skips a new activity) and cheap.
+async function handleFindNext(): Promise<void> {
   if (batchInFlight) return;
   batchInFlight = true;
-  updateLoadMoreButton({ disabled: true, text: "Loading…" });
+  updateFindNextButton({ disabled: true, text: "Searching…" });
+  setStatus("");
   try {
-    const session = await getMatchSession();
+    const refreshRes = await send({ type: "refreshActivities" });
+    if (!refreshRes.ok) {
+      setStatus(`Refresh failed: ${friendlyError(refreshRes.error)}`);
+      updateFindNextButton({ disabled: false, text: FIND_NEXT_LABEL });
+      batchInFlight = false;
+      return;
+    }
+    await setMatchSession({
+      lastAutoRefreshDay: todayLocalISO(),
+      lastBatchEndIndex: 0,
+    });
+    await renderActivities();
     await send({
       type: "matchBatch",
-      startIndex: session?.lastBatchEndIndex ?? 0,
+      startIndex: 0,
       size: BATCH_SIZE,
       autoContinue: true,
     });
-  } finally {
-    // batchInFlight is cleared by handleBatchDone.
+    // Terminal button state + batchInFlight are cleared by
+    // handleBatchDone when the matchBatch:done event arrives.
+  } catch (e) {
+    setStatus(`Match failed: ${friendlyError(String(e))}`);
+    updateFindNextButton({ disabled: false, text: FIND_NEXT_LABEL });
+    batchInFlight = false;
   }
 }
 
-function updateLoadMoreButton(opts: {
+function updateFindNextButton(opts: {
   disabled: boolean;
-  text: string;
-  visible?: boolean;
+  text?: string;
 }): void {
-  const btn = document.getElementById("load-more-btn");
+  const btn = document.getElementById("refresh-btn");
   if (!(btn instanceof HTMLButtonElement)) return;
   btn.disabled = opts.disabled;
-  btn.textContent = opts.text;
-  if (opts.visible !== undefined) btn.hidden = !opts.visible;
+  if (opts.text !== undefined) btn.textContent = opts.text;
 }
 
 async function getStravaNextRetryAt(): Promise<number | null> {
@@ -264,11 +280,7 @@ function scheduleCooldownRecheck(ts: number): void {
   const delay = Math.max(1000, ts - Date.now() + 5000);
   cooldownTimer = setTimeout(() => {
     cooldownTimer = null;
-    updateLoadMoreButton({
-      disabled: false,
-      text: "Load more",
-      visible: true,
-    });
+    updateFindNextButton({ disabled: false, text: FIND_NEXT_LABEL });
   }, delay);
 }
 
@@ -368,24 +380,6 @@ async function handleHideAll(): Promise<void> {
     await renderActivities();
   } finally {
     btn.textContent = previousText;
-    btn.disabled = false;
-  }
-}
-
-async function handleRefresh(): Promise<void> {
-  const btn = el<HTMLButtonElement>("refresh-btn");
-  btn.disabled = true;
-  setStatus("Refreshing…");
-
-  try {
-    const res = await send({ type: "refreshActivities" });
-    if (!res.ok) {
-      setStatus(`Refresh failed: ${res.error}`);
-    } else {
-      setStatus("");
-    }
-    await renderActivities();
-  } finally {
     btn.disabled = false;
   }
 }

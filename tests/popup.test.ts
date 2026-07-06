@@ -20,7 +20,7 @@ const PAGE_HTML = `
         Show hidden
       </label>
       <button id="hide-all-btn" type="button">Hide all</button>
-      <button id="refresh-btn" type="button">Refresh</button>
+      <button id="refresh-btn" type="button">Find next match</button>
     </div>
   </header>
   <p id="cid-warning" class="warning" role="status" hidden>warning</p>
@@ -28,7 +28,6 @@ const PAGE_HTML = `
   <p id="match-progress" role="status"></p>
   <ul id="activity-list"></ul>
   <p id="empty-state" class="empty" hidden>empty</p>
-  <button id="load-more-btn" type="button" hidden>Load more</button>
 `;
 
 function makeActivity(
@@ -141,15 +140,20 @@ describe("popup init — activity list rendering", () => {
   });
 });
 
-describe("popup — Refresh button", () => {
-  it("calls refreshActivities and re-fetches the list", async () => {
-    // First response: getActivities (init). Then refreshActivities. Then getActivities (post-refresh).
+describe("popup — Find next match button", () => {
+  it("refreshes the list, then runs matchBatch from index 0", async () => {
+    // init getActivities → refreshActivities → getActivities (render) → matchBatch.
     sendMessage
       .mockResolvedValueOnce({ ok: true, activities: [] })
       .mockResolvedValueOnce({ ok: true, count: 5 })
       .mockResolvedValueOnce({
         ok: true,
         activities: [makeActivity(1, "2026-05-08T17:00:00Z", "Hike", "x")],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        reason: "found-pending",
+        endIndex: 1,
       });
 
     await init();
@@ -157,17 +161,49 @@ describe("popup — Refresh button", () => {
     await flushAsync();
     await flushAsync();
     await flushAsync();
+    await flushAsync();
 
-    expect(sendMessage).toHaveBeenCalledTimes(3);
-    expect(sendMessage.mock.calls[1]![0]).toEqual({ type: "refreshActivities" });
+    const calls = sendMessage.mock.calls.map((c: unknown[]) => c[0]);
+    expect(calls[1]).toEqual({ type: "refreshActivities" });
+    expect(calls).toContainEqual({
+      type: "matchBatch",
+      startIndex: 0,
+      size: 20,
+      autoContinue: true,
+    });
     expect(document.querySelectorAll(".activity")).toHaveLength(1);
   });
 
-  it("surfaces an error when refresh fails", async () => {
+  it("scans from 0 even when a cursor was previously advanced", async () => {
+    // A stale cursor must NOT cause a from-cursor scan — new activities
+    // sort to the top (index 0) and would be skipped otherwise.
+    storage.bag["matchSession"] = {
+      lastAutoRefreshDay: new Date().toLocaleDateString("sv-SE"),
+      lastBatchEndIndex: 47,
+    };
     sendMessage
       .mockResolvedValueOnce({ ok: true, activities: [] })
-      .mockResolvedValueOnce({ ok: false, error: "rate limited" })
-      .mockResolvedValueOnce({ ok: true, activities: [] });
+      .mockResolvedValueOnce({ ok: true, count: 1 })
+      .mockResolvedValueOnce({ ok: true, activities: [] })
+      .mockResolvedValueOnce({ ok: true, reason: "exhausted", endIndex: 1 });
+
+    await init();
+    button("refresh-btn").click();
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    const matchCall = sendMessage.mock.calls
+      .map((c: unknown[]) => c[0] as { type?: string; startIndex?: number })
+      .find((c) => c.type === "matchBatch");
+    expect(matchCall?.startIndex).toBe(0);
+  });
+
+  it("surfaces an error when refresh fails and does not run matchBatch", async () => {
+    sendMessage
+      .mockResolvedValueOnce({ ok: true, activities: [] })
+      .mockResolvedValueOnce({ ok: false, error: "rate limited" });
 
     await init();
     button("refresh-btn").click();
@@ -178,6 +214,12 @@ describe("popup — Refresh button", () => {
     expect(document.getElementById("status")?.textContent).toContain(
       "rate limited",
     );
+    const types = sendMessage.mock.calls.map(
+      (c: unknown[]) => (c[0] as { type: string }).type,
+    );
+    expect(types).not.toContain("matchBatch");
+    // Button re-enabled for another attempt.
+    expect(button("refresh-btn").disabled).toBe(false);
   });
 });
 
@@ -628,7 +670,7 @@ describe("popup — v0.2 streaming + auto-trigger", () => {
     expect(progress).toContain("Found 0 matches");
   });
 
-  it('matchBatch:done with reason=exhausted disables Load more with "No more activities"', async () => {
+  it('matchBatch:done with reason=exhausted re-enables the button and reports all caught up', async () => {
     sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
     await init();
     await flushAsync();
@@ -644,13 +686,37 @@ describe("popup — v0.2 streaming + auto-trigger", () => {
     await flushAsync();
     await flushAsync();
 
-    const btn = document.getElementById("load-more-btn") as HTMLButtonElement;
-    expect(btn.disabled).toBe(true);
-    expect(btn.textContent).toContain("No more activities");
-    expect(btn.hidden).toBe(false);
+    const btn = document.getElementById("refresh-btn") as HTMLButtonElement;
+    // Stays live: a later sync may add new activities to find.
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent).toBe("Find next match");
+    expect(document.getElementById("status")?.textContent).toContain(
+      "all caught up",
+    );
   });
 
-  it('matchBatch:done with reason=rate-limited shows cooldown text', async () => {
+  it('matchBatch:done with reason=found-pending re-enables the button', async () => {
+    sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
+    await init();
+    await flushAsync();
+
+    fireBatchEvent({
+      type: "matchBatch:done",
+      sessionId: "x",
+      totalScanned: 2,
+      totalMatches: 1,
+      endIndex: 2,
+      reason: "found-pending",
+    });
+    await flushAsync();
+    await flushAsync();
+
+    const btn = document.getElementById("refresh-btn") as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent).toBe("Find next match");
+  });
+
+  it('matchBatch:done with reason=rate-limited shows cooldown text on the button', async () => {
     storage.sessionBag["stravaNextRetryAt"] = Date.now() + 60 * 60 * 1000;
     sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
     await init();
@@ -667,33 +733,8 @@ describe("popup — v0.2 streaming + auto-trigger", () => {
     await flushAsync();
     await flushAsync();
 
-    const btn = document.getElementById("load-more-btn") as HTMLButtonElement;
+    const btn = document.getElementById("refresh-btn") as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     expect(btn.textContent).toMatch(/Rate limited.*\d{2}:\d{2}/);
-  });
-
-  it("Load more click sends matchBatch with the saved cursor", async () => {
-    storage.bag["matchSession"] = {
-      lastAutoRefreshDay: new Date().toLocaleDateString("sv-SE"),
-      lastBatchEndIndex: 47,
-    };
-    sendMessage.mockResolvedValueOnce({ ok: true, activities: [] });
-    await init();
-    await flushAsync();
-    sendMessage.mockReset();
-    sendMessage.mockResolvedValueOnce({ ok: true });
-
-    const btn = document.getElementById("load-more-btn") as HTMLButtonElement;
-    btn.hidden = false;
-    btn.click();
-    await flushAsync();
-    await flushAsync();
-
-    expect(sendMessage.mock.calls[0]![0]).toMatchObject({
-      type: "matchBatch",
-      startIndex: 47,
-      size: 20,
-      autoContinue: true,
-    });
   });
 });

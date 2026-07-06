@@ -498,7 +498,7 @@ export async function handleLogAscents(stravaId: number): Promise<
     if (!entry || entry.peakIds.length === 0) {
       return {
         ok: false,
-        error: "No matches cached — refresh the popup first",
+        error: "No matches cached — click Find next match first",
       };
     }
 
@@ -931,7 +931,7 @@ async function matchActivity(
   const cached = (await get("activities")) ?? [];
   const activity = cached.find((a) => a.id === stravaId);
   if (!activity) {
-    throw new Error("Activity not in cache — click Refresh first");
+    throw new Error("Activity not in cache — click Find next match first");
   }
   const track = await fetchStreams(stravaId);
   const peaks = await peaksForTrack(track, settings.horizM);
