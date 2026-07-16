@@ -24,3 +24,6 @@ node_modules/
 .wxt/
 .output/
 *.tsbuildinfo
+
+# macOS
+.DS_Store
